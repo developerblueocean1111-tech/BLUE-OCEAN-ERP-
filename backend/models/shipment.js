@@ -79,6 +79,18 @@ total_no_of_boxes: { type: Number },
     container_no: { type: String },
     pol: { type: String }, // Port of Loading
 
+    // ✅ NEW — Cargo Security Declaration editable fields (Document Generation
+    // feature). Additive only: no existing field touched. Still editable
+    // per-generation in the modal; this just lets a value persist on the
+    // shipment once entered instead of always starting blank.
+    hawb: { type: String, default: "" },
+    mawb: { type: String, default: "" },
+
+    // ✅ NEW — End Use Letter editable field (Document Generation feature).
+    // Additive only. Still editable per-generation in the modal; this just
+    // lets a value persist once entered instead of always starting blank.
+    sector: { type: String, default: "" },
+
     notify_email: { type: String },
     email_message: { type: String },
     manual_desc: { type: String },

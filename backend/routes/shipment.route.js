@@ -9,9 +9,12 @@ const {
   getEnquiryNumber,
   fetchAllShipments,
   getShipmentByBl,
-  getShipmentById,
+   getShipmentById,  
   fetchPartAnalytics,
   searchShipmentsByEtd,
+  listDocumentTypes,
+  previewDocument,
+  generateDocument,
 } = require("../controllers/shipment.controller");
 const router = express.Router();
 
@@ -23,11 +26,25 @@ router.patch("/manual-desc/:id", updateManualDesc);
 router.post("/bulk-upload", bulkUploadShipments);
 router.get("/enquiry-number", getEnquiryNumber);
 router.get("/by-bl/:blNo", getShipmentByBl);
-// ✅ NEW — Dashboard Enhancement: Part Number Analytics + ETD Date Search.
-// Purely additive; every route above is unchanged.
-router.get("/part-analytics/:partNo", fetchPartAnalytics);
+
+// ── New: Dashboard Enhancement — Part Number Analytics + ETD Search ──────
 router.get("/search-by-etd", searchShipmentsByEtd);
+router.get("/part-analytics/:partNo", fetchPartAnalytics);
+
+router.get("/", fetchAllShipments);
+
+// ── New: Document Generation — Logistics → Shipment List "Generate Document" ──
+// Must be registered BEFORE the catch-all GET /:id below so ":id" doesn't
+// swallow these more specific paths.
+router.get("/:id/document-types", listDocumentTypes);
+router.get("/:id/generate-document/:docType/preview", previewDocument);
+router.post("/:id/generate-document/:docType", generateDocument);
+
+// BUG FIX: GET /:id was imported but never registered.
+// Wizard.js calls GET /shipment/:id on edit to fetch the full document.
+// Without this route, the call 404'd and Wizard fell back to location.state
+// (the list-row snapshot) which lacked parts[].net_wt_per_unit & box_size.
+// Must be AFTER all specific GET routes to avoid shadowing them.
 router.get("/:id", getShipmentById);
-router.get("/", fetchAllShipments)
 
 module.exports = router;

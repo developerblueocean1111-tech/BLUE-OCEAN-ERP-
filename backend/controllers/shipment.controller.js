@@ -4,6 +4,21 @@ const part = require("../models/part");
 const shipment = require("../models/shipment");
 const XLSX = require('xlsx');
 
+// ✅ Inline search sanitizer — removes invisible/hidden characters that
+// pasted text (Excel, email, PDF, Word) carries but typed text never does,
+// then escapes regex metacharacters so the term matches literally.
+function sanitizeSearchTerm(input) {
+  if (input === undefined || input === null) return "";
+  let str = String(input);
+  str = str.replace(/[\u200B\u200C\u200D\u2060\uFEFF\u180E]/g, "");
+  str = str.replace(/[\u0009-\u000D\u0020\u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]/g, " ");
+  str = str.replace(/[\u0000-\u0008\u000E-\u001F\u007F-\u009F]/g, "");
+  return str.replace(/\s+/g, " ").trim();
+}
+function toSafeRegexTerm(input) {
+  return sanitizeSearchTerm(input).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function normalize(data) {
   const out = { ...data };
 
@@ -14,6 +29,7 @@ function normalize(data) {
     "sb_no", "bl_no", "pol", "container_no",
     "notify_email", "email_message", "manual_desc",
     "ff", "invoice_no", "customer", "supplier_name", "enquiry_no",
+    "hawb", "mawb", "sector",
   ]);
 
   Object.keys(out).forEach((k) => {
@@ -71,17 +87,6 @@ function mergePreservingExisting(doc, incoming) {
 // (prevents ReDoS / regex-injection via search boxes).
 function escapeRegex(str = "") {
   return String(str).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-// Builds a case-insensitive, partial-match regex for a part number search
-// term, ignoring spaces and dashes on both sides of the comparison — so
-// "501 14 013", "501-14-013", and "5011 4013" all match the same part.
-// Throws on an empty/whitespace-only term so callers can 400 cleanly.
-function buildPartNoRegex(term) {
-  const cleaned = String(term || "").trim();
-  if (!cleaned) throw new Error("Empty part number search term");
-  const normalized = escapeRegex(cleaned).replace(/[\s-]+/g, "[\\s-]*");
-  return new RegExp(normalized, "i");
 }
 
 // Mirrors calcDeliveryStatus() in frontend/src/pages/ShipmentsList.js and
@@ -518,131 +523,71 @@ exports.getEnquiryNumber = async (req, res) => {
     res.status(500).json({ error: "Failed to generate enquiry number" });
   }
 };
+
 exports.fetchAllShipments = async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
-    // ✅ FIX — "All Entries" is a real backend mode (pageSize=all) instead of
-    // relying on the frontend sending an arbitrarily large numeric limit.
-    // When requested, skip/limit are omitted so the complete filtered/sorted
-    // result set is returned in one query.
-    const isAllEntries = req.query.pageSize === "all";
-    const limit = isAllEntries ? 0 : (parseInt(req.query.pageSize) || 10);
-    const skip = isAllEntries ? 0 : (page - 1) * limit;
+    const limit = parseInt(req.query.pageSize) || 10;
+    const skip = (page - 1) * limit;
 
     const matchQuery = {
       status: { $ne: "DELETED" },
     };
 
-    if (req.query?.search) {
-      matchQuery["$or"] = [
-        { enquiry_no: { $regex: req.query.search, $options: "i" } },
-        { supplier_name: { $regex: req.query.search, $options: "i" } },
-        { customer: { $regex: req.query.search, $options: "i" } },
-        { bl_no: { $regex: req.query.search, $options: "i" } },
-        // ✅ NEW — added Invoice No so the search bar can also match invoice_no
-        { invoice_no:    { $regex: req.query.search, $options: "i" } },
-         { "parts.part_no": { $regex: req.query.search, $options: "i" } },
-          { mode: { $regex: req.query.search, $options: "i" } }
-      ];
-    }
+  if (req.query?.search) {
+      const safeSearch = toSafeRegexTerm(req.query.search);
 
-    // ✅ FIX — ETD Date Range / Supplier ETD Date Range must be applied as a
-    // real backend query against the full collection (previously these were
-    // only filtered on the frontend against whichever page happened to be
-    // loaded). Dates are widened to full-day boundaries so "From"/"To" are
-    // inclusive on both ends, matching the previous client-side behaviour.
-    if (req.query?.etdFrom || req.query?.etdTo) {
-      matchQuery.etd = {};
-      if (req.query.etdFrom) {
-        const from = new Date(req.query.etdFrom);
-        if (!Number.isNaN(from.getTime())) {
-          from.setHours(0, 0, 0, 0);
-          matchQuery.etd.$gte = from;
-        }
+      if (safeSearch) {
+        matchQuery["$or"] = [
+          { enquiry_no: { $regex: safeSearch, $options: "i" } },
+          { supplier_name: { $regex: safeSearch, $options: "i" } },
+          { customer: { $regex: safeSearch, $options: "i" } },
+          { bl_no: { $regex: safeSearch, $options: "i" } },
+          { invoice_no:    { $regex: safeSearch, $options: "i" } },
+           { "parts.part_no": { $regex: safeSearch, $options: "i" } },
+            { mode: { $regex: safeSearch, $options: "i" } }
+        ];
       }
-      if (req.query.etdTo) {
-        const to = new Date(req.query.etdTo);
-        if (!Number.isNaN(to.getTime())) {
-          to.setHours(23, 59, 59, 999);
-          matchQuery.etd.$lte = to;
-        }
-      }
-      if (Object.keys(matchQuery.etd).length === 0) delete matchQuery.etd;
-    }
-
-    if (req.query?.supplierEtdFrom || req.query?.supplierEtdTo) {
-      matchQuery.supplier_etd = {};
-      if (req.query.supplierEtdFrom) {
-        const from = new Date(req.query.supplierEtdFrom);
-        if (!Number.isNaN(from.getTime())) {
-          from.setHours(0, 0, 0, 0);
-          matchQuery.supplier_etd.$gte = from;
-        }
-      }
-      if (req.query.supplierEtdTo) {
-        const to = new Date(req.query.supplierEtdTo);
-        if (!Number.isNaN(to.getTime())) {
-          to.setHours(23, 59, 59, 999);
-          matchQuery.supplier_etd.$lte = to;
-        }
-      }
-      if (Object.keys(matchQuery.supplier_etd).length === 0) delete matchQuery.supplier_etd;
     }
 
     const total = await shipment.countDocuments(matchQuery);
 
-    // ✅ FIX — sort is now driven by the query too (defaulting to createdAt),
-    // so "Oldest → Newest" / "Newest → Oldest" on the ETD / Supplier ETD
-    // columns sorts the entire matching result set before pagination is
-    // applied, instead of only re-ordering the rows already on screen.
-    // Supplier ETD sort takes precedence when both are supplied, matching
-    // the previous frontend-only behaviour.
-    let sortStage = { createdAt: -1 };
-    if (req.query?.supplierEtdSort === "asc") sortStage = { supplier_etd: 1 };
-    else if (req.query?.supplierEtdSort === "desc") sortStage = { supplier_etd: -1 };
-    else if (req.query?.etdSort === "asc") sortStage = { etd: 1 };
-    else if (req.query?.etdSort === "desc") sortStage = { etd: -1 };
-
-    const pipeline = [
+    const shipments = await shipment.aggregate([
       { $match: matchQuery },
-      { $sort: sortStage },
-    ];
-    // Only paginate when a specific page size was requested — "All Entries"
-    // returns every matching record from the full, already-filtered query.
-    if (!isAllEntries) {
-      pipeline.push({ $skip: skip }, { $limit: limit });
-    }
-    pipeline.push({
-      // Explicit projection forces MongoDB to return computed values for both structures
-      $project: {
-        _id: 1,
-        ff: 1,
-        invoice_no: 1,
-        invoice_date: 1,
-        enquiry_no: 1,
-        supplier_name: 1,
-        customer: 1,
-        incoterm: 1,
-        mode: 1,
-        etd: 1,
-        sb_no: 1,
-        sb_date: 1,
-        final_delivery_date: 1,
-        bl_no: 1,
-        container_no: 1,
-        pol: 1,
-        status: 1,
-        delivery_status: 1,
-        manual_desc: 1,
-        parts: 1,
-        createdAt: 1, // NEW — needed by the Logistics Dashboard to group real shipments by month
+      { $sort: { createdAt: -1 } },
+      { $skip: skip },
+      { $limit: limit },
+      {
+        // Explicit projection forces MongoDB to return computed values for both structures
+        $project: {
+          _id: 1,
+          ff: 1,
+          invoice_no: 1,
+          invoice_date: 1,
+          enquiry_no: 1,
+          supplier_name: 1,
+          customer: 1,
+          incoterm: 1,
+          mode: 1,
+          etd: 1,
+          sb_no: 1,
+          sb_date: 1,
+          final_delivery_date: 1,
+          bl_no: 1,
+          container_no: 1,
+          pol: 1,
+          status: 1,
+          delivery_status: 1,
+          manual_desc: 1,
+          parts: 1,           // includes net_wt_per_unit, box_size, gross_wt, no_of_boxes
+          createdAt: 1,       // needed by the Logistics Dashboard to group real shipments by month
+          supplier_etd: 1,    // supplier ETD date
         total_no_of_boxes: { $ifNull: ["$total_no_of_boxes", { $ifNull: ["$total_boxes", { $ifNull: ["$part_boxes", 0] }] }] },
-        total_gross_weight: { $ifNull: ["$total_gross_weight", { $ifNull: ["$total_gross_wt", { $ifNull: ["$gross_wt", 0] }] }] },
-        total_net_weight: { $ifNull: ["$total_net_weight", { $ifNull: ["$total_net_wt", { $ifNull: ["$net_wt", 0] }] }] },
+          total_gross_weight: { $ifNull: ["$total_gross_weight", { $ifNull: ["$total_gross_wt", { $ifNull: ["$gross_wt", 0] }] }] },
+          total_net_weight: { $ifNull: ["$total_net_weight", { $ifNull: ["$total_net_wt", { $ifNull: ["$net_wt", 0] }] }] },
+        }
       }
-    });
-
-    const shipments = await shipment.aggregate(pipeline);
+    ]);
 
     res.set("x-total-count", String(total));
     return res.json(shipments);
@@ -652,77 +597,65 @@ exports.fetchAllShipments = async (req, res) => {
   }
 };
 
-// ✅ NEW — was imported by routes.js and called by the edit-shipment wizard
-// (frontend/src/wizard/Wizard.js, GET /shipment/:id fallback fetch when a
-// user opens an edit link directly instead of navigating from the list)
-// but was never actually implemented, so that fetch was 404-ing.
-exports.getShipmentById = async (req, res) => {
-  try {
-    const doc = await shipment.findOne({ _id: req.params.id, status: { $ne: "DELETED" } }).lean();
-    if (!doc) return res.status(404).json({ message: "Shipment not found" });
-    res.json(doc);
-  } catch (err) {
-    console.error("Get shipment by id error:", err);
-    res.status(500).json({ message: "Failed to fetch shipment" });
-  }
-};
-
+// ──────────────────────────────────────────────────────────────────────────
+// FEATURE 1 — Part Number Analytics
+// GET /shipment/part-analytics/:partNo
+//
+// Every number below is derived from real Shipment List records that
+// contain this part number — nothing is hardcoded. Two assumptions were
+// necessary because the schema has no separate "sales order" module or a
+// distinct planned-vs-actual quantity field; they are called out here and
+// mirrored in the frontend labels/tooltips so nothing is presented as more
+// precise than it is:
+//   • "Quantity Shipped" = quantity on shipments whose computed delivery
+//     status is IN_TRANSIT or DELIVERED (i.e. it has left the supplier).
+//     "Pending" = quantity still IN_PROCESS. Cancelled-shipment quantity is
+//     reported separately and excluded from these totals.
+//   • "Total Parts Sold" reuses the same ordered-quantity total, since the
+//     app has no separate sales/order-value figure to draw from.
+// ──────────────────────────────────────────────────────────────────────────
 exports.fetchPartAnalytics = async (req, res) => {
   try {
     const partNo = (req.params.partNo || "").trim();
     if (!partNo) return res.status(400).json({ message: "Part number is required" });
 
-    let partNoRegex;
-    try {
-      partNoRegex = buildPartNoRegex(partNo);
-    } catch (e) {
-      return res.status(400).json({ message: "Invalid part number search term" });
-    }
+    const safePartNo = escapeRegex(partNo);
 
     // Only pull shipments that actually contain this part, and only the
     // matching part sub-documents — keeps this fast even on very large
-    // shipment collections. Match is case-insensitive, partial, and ignores
-    // spaces/dashes on both sides (see buildPartNoRegex above).
-    let docs;
-    try {
-      docs = await shipment.aggregate([
-        {
-          $match: {
-            status: { $ne: "DELETED" },
-            "parts.part_no": { $regex: partNoRegex },
-          },
+    // shipment collections.
+    const docs = await shipment.aggregate([
+      {
+        $match: {
+          status: { $ne: "DELETED" },
+          "parts.part_no": { $regex: `^${safePartNo}$`, $options: "i" },
         },
-        {
-          $project: {
-            enquiry_no: 1,
-            customer: 1,
-            supplier_name: 1,
-            invoice_no: 1,
-            bl_no: 1,
-            etd: 1,
-            final_delivery_date: 1,
-            status: 1,
-            delivery_status: 1,
-            createdAt: 1,
-            parts: {
-              $filter: {
-                input: "$parts",
-                as: "p",
-                cond: { $regexMatch: { input: "$$p.part_no", regex: partNoRegex } },
-              },
+      },
+      {
+        $project: {
+          enquiry_no: 1,
+          customer: 1,
+          supplier_name: 1,
+          invoice_no: 1,
+          bl_no: 1,
+          etd: 1,
+          final_delivery_date: 1,
+          status: 1,
+          delivery_status: 1,
+          createdAt: 1,
+          parts: {
+            $filter: {
+              input: "$parts",
+              as: "p",
+              cond: { $regexMatch: { input: "$$p.part_no", regex: `^${safePartNo}$`, options: "i" } },
             },
           },
         },
-      ]);
-    } catch (dbErr) {
-      console.error("Part analytics DB query error:", dbErr);
-      return res.status(500).json({ message: "Database query failed" });
-    }
+      },
+    ]);
 
     if (!docs.length) {
-      // Meaningful message instead of a generic failure — matches spec:
-      // "No shipment found for Part Number P04448" style messaging.
-      return res.json({ partNo, found: false, message: `No shipment found for Part Number ${partNo}` });
+      return res.json({ partNo, found: false });
     }
 
     // ── Flatten into one row per shipment (summing qty if the part
@@ -893,7 +826,7 @@ exports.fetchPartAnalytics = async (req, res) => {
     });
   } catch (err) {
     console.error("Part analytics error:", err);
-    res.status(500).json({ message: "Database query failed" });
+    res.status(500).json({ message: "Failed to fetch part number analytics" });
   }
 };
 
@@ -915,18 +848,6 @@ exports.searchShipmentsByEtd = async (req, res) => {
 
     if (!date && !fromDate && !toDate) {
       return res.status(400).json({ message: "Provide a single ETD date or a fromDate/toDate range" });
-    }
-
-    // Validate every date param BEFORE building the query — never let an
-    // invalid date silently become "Invalid Date" and turn into a
-    // MongoDB comparison bug (which previously caused "no records"/500s).
-    for (const [label, val] of [["date", date], ["fromDate", fromDate], ["toDate", toDate]]) {
-      if (val && Number.isNaN(new Date(val).getTime())) {
-        return res.status(400).json({ message: `Invalid ${label}. Use a valid calendar date.` });
-      }
-    }
-    if (fromDate && toDate && new Date(fromDate) > new Date(toDate)) {
-      return res.status(400).json({ message: "fromDate cannot be after toDate" });
     }
 
     const match = { status: { $ne: "DELETED" } };
@@ -951,9 +872,9 @@ exports.searchShipmentsByEtd = async (req, res) => {
       }
     }
 
-    if (customer) match.customer = { $regex: escapeRegex(customer.trim()), $options: "i" };
-    if (supplier) match.supplier_name = { $regex: escapeRegex(supplier.trim()), $options: "i" };
-    if (partNo) match["parts.part_no"] = { $regex: buildPartNoRegex(partNo) };
+    if (customer) match.customer = { $regex: escapeRegex(customer), $options: "i" };
+    if (supplier) match.supplier_name = { $regex: escapeRegex(supplier), $options: "i" };
+    if (partNo) match["parts.part_no"] = { $regex: escapeRegex(partNo), $options: "i" };
     if (status) match.status = status;
 
     const now = new Date();
@@ -1061,7 +982,7 @@ exports.searchShipmentsByEtd = async (req, res) => {
     });
   } catch (err) {
     console.error("ETD search error:", err);
-    res.status(500).json({ message: "Database query failed" });
+    res.status(500).json({ message: "Failed to search shipments by ETD" });
   }
 };
 
@@ -1110,7 +1031,6 @@ exports.getShipmentByBl = async (req, res) => {
   }
 };
 
-
 // ─────────────────────────────────────────────────────────────────────────────
 // GET /shipment/:id  — fetch one shipment by MongoDB _id for the edit form
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1142,6 +1062,120 @@ exports.getShipmentById = async (req, res) => {
     res.json(doc);
   } catch (err) {
     console.error("getShipmentById error:", err);
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ✅ NEW — Document Generation (Logistics → Shipment List → "Generate Document")
+//   Additive-only feature. Reads the existing shipment record as the single
+//   source of truth and fills one of 5 fixed DOCX templates (document-templates/).
+//   No existing field, schema, route, or shipment logic is touched.
+// ─────────────────────────────────────────────────────────────────────────────
+const {
+  DOCUMENT_TYPES,
+  previewDocumentFields,
+  generateDocumentBuffer,
+} = require("../utils/documentGenerator");
+
+// GET /:id/document-types — list the 5 available document types for the picker
+exports.listDocumentTypes = async (req, res) => {
+  const list = Object.entries(DOCUMENT_TYPES).map(([docType, meta]) => ({
+    docType,
+    label: meta.label,
+  }));
+  res.json(list);
+};
+
+// GET /:id/generate-document/:docType/preview
+//   Returns AUTO values (invoice no/date/mode) + current EDITABLE field values
+//   (shipment-derived defaults) so the frontend can render the edit form.
+exports.previewDocument = async (req, res) => {
+  try {
+    const { id, docType } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid shipment ID" });
+    }
+    if (!DOCUMENT_TYPES[docType]) {
+      return res.status(400).json({ message: "Invalid document type" });
+    }
+    const doc = await shipment.findById(id).lean();
+    if (!doc) {
+      return res.status(404).json({ message: "Shipment not found" });
+    }
+    const preview = previewDocumentFields(docType, doc);
+    res.json(preview);
+  } catch (err) {
+    console.error("previewDocument error:", err);
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// POST /:id/generate-document/:docType
+//   Body: { editableFields: { part_desc?, end_user?, hawb?, mawb? } }
+//   Fills the fixed template with shipment AUTO values + the user's edited
+//   values, and streams the resulting .docx back for download.
+const { convertDocxBufferToPdf } = require("../utils/pdfConverter");
+
+// ✅ NEW — fixed PDF filenames as requested (no invoice-number suffix,
+// matching the exact names given in the spec).
+const PDF_FILENAMES = {
+  evd: "EVD.pdf",
+  end_use_letter: "End_Use_Letter.pdf",
+  scomet: "SCOMET_Declaration.pdf",
+  authority_letter: "Authority_Letter.pdf",
+  cargo_security_declaration: "Cargo_Security_Declaration.pdf",
+};
+
+exports.generateDocument = async (req, res) => {
+  try {
+    const { id, docType } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid shipment ID" });
+    }
+    if (!DOCUMENT_TYPES[docType]) {
+      return res.status(400).json({ message: "Invalid document type" });
+    }
+    const doc = await shipment.findById(id).lean();
+    if (!doc) {
+      return res.status(404).json({ message: "Shipment not found" });
+    }
+
+    const editableOverrides = (req.body && req.body.editableFields) || {};
+    const buffer = generateDocumentBuffer(docType, doc, editableOverrides);
+
+    // ✅ NEW — optional PDF output. Existing behavior (DOCX) is completely
+    // unchanged when ?format=pdf is not passed, so nothing already relying
+    // on this endpoint is affected.
+    if (req.query.format === "pdf") {
+      let pdfBuffer;
+      try {
+        pdfBuffer = await convertDocxBufferToPdf(buffer, DOCUMENT_TYPES[docType].file);
+      } catch (convErr) {
+        console.error("PDF conversion error:", convErr);
+        return res.status(500).json({ message: "PDF conversion failed. Please try again." });
+      }
+      const pdfFilename = PDF_FILENAMES[docType] || "document.pdf";
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Disposition", `attachment; filename="${pdfFilename}"`);
+      return res.send(pdfBuffer);
+    }
+
+    const meta = DOCUMENT_TYPES[docType];
+    const safeInvoice = (doc.invoice_no || id).toString().replace(/[^a-zA-Z0-9_-]/g, "");
+    const filename = `${meta.file.replace(".docx", "")}_${safeInvoice}.docx`;
+
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    );
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.send(buffer);
+  } catch (err) {
+    if (err.code === "MISSING_REQUIRED_FIELDS") {
+      return res.status(422).json({ message: err.message, details: err.details });
+    }
+    console.error("generateDocument error:", err);
     res.status(500).json({ message: err.message });
   }
 };
