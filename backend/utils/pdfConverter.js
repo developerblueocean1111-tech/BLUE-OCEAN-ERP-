@@ -1,66 +1,75 @@
 // ─────────────────────────────────────────────────────────────────────────
-// DOCX → PDF conversion for Document Generation downloads — via a real
-// installed Microsoft Word (COM automation on Windows), not LibreOffice.
-// This renders the header/footer/floating logo exactly as Word displays
-// them, since it IS Word doing the conversion — no template changes of any
-// kind are required for this to work correctly.
+// DOCX → PDF conversion for Document Generation downloads — via CloudConvert
+// (cloud API). Works on any server, including Render's Linux environment —
+// unlike the Word-COM-automation version, which only runs on a Windows
+// machine with Microsoft Word installed.
 //
-// REQUIRES: Microsoft Word installed on this Windows machine. This only
-// works on Windows (COM automation is a Windows-only technology) — it will
-// NOT work on a Linux server (e.g. your Render deployment). If you deploy
-// this backend to Render, you'll need a different converter there
-// (LibreOffice or CloudConvert, both covered in earlier versions of this
-// file) — this Word-based version is best suited for local/on-prem Windows
-// use where document fidelity matters most.
+// REQUIRES: a CloudConvert account + API key, set as an environment
+// variable on whichever server runs this (Render, in this case — set it
+// under your Render service's "Environment" tab, NOT just in a local .env
+// file, since Render doesn't read your local .env).
+//   1. Sign up (free tier available): https://cloudconvert.com/register
+//   2. Create an API key: https://cloudconvert.com/dashboard/api/v2/keys
+//   3. In Render: your service → "Environment" tab → Add Environment
+//      Variable → Key: CLOUDCONVERT_API_KEY, Value: your key → Save
+//      (this triggers an automatic redeploy)
 //
 // This only runs *after* generateDocumentBuffer() has already produced the
 // finished, fully-populated DOCX — no template/content/formatting logic is
-// touched here, and neither is the DOCX file itself.
+// touched here.
 // ─────────────────────────────────────────────────────────────────────────
-const fs = require("fs");
-const os = require("os");
-const path = require("path");
-const crypto = require("crypto");
-const { execFile } = require("child_process");
+const CloudConvert = require("cloudconvert");
 
-const SCRIPT_PATH = path.join(__dirname, "docx-to-pdf.ps1");
-
-function runWordConversion(inputPath, outputPath) {
-  return new Promise((resolve, reject) => {
-    execFile(
-      "powershell.exe",
-      [
-        "-NoProfile",
-        "-ExecutionPolicy", "Bypass",
-        "-File", SCRIPT_PATH,
-        "-InputPath", inputPath,
-        "-OutputPath", outputPath,
-      ],
-      { windowsHide: true, timeout: 60000 },
-      (err, stdout, stderr) => {
-        if (err) {
-          return reject(new Error(stderr?.trim() || err.message));
-        }
-        resolve();
-      }
+async function convertDocxBufferToPdf(docxBuffer, filename = "document.docx") {
+  const apiKey = process.env.CLOUDCONVERT_API_KEY;
+  if (!apiKey) {
+    const err = new Error(
+      "CLOUDCONVERT_API_KEY is not set. Add it in Render's Environment tab (see backend/utils/pdfConverter.js for setup steps)."
     );
-  });
-}
-
-async function convertDocxBufferToPdf(docxBuffer /*, filename (unused here) */) {
-  const uid = crypto.randomUUID();
-  const inputPath = path.join(os.tmpdir(), `${uid}.docx`);
-  const outputPath = path.join(os.tmpdir(), `${uid}.pdf`);
-
-  fs.writeFileSync(inputPath, docxBuffer);
-  try {
-    await runWordConversion(inputPath, outputPath);
-    return fs.readFileSync(outputPath);
-  } finally {
-    // Clean up temp files regardless of success/failure.
-    try { fs.unlinkSync(inputPath); } catch (_) {}
-    try { fs.unlinkSync(outputPath); } catch (_) {}
+    err.code = "MISSING_API_KEY";
+    throw err;
   }
+
+  const cloudConvert = new CloudConvert(apiKey);
+
+  let job = await cloudConvert.jobs.create({
+    tasks: {
+      "import-doc": { operation: "import/upload" },
+      "convert-doc": {
+        operation: "convert",
+        input: "import-doc",
+        output_format: "pdf",
+      },
+      "export-doc": {
+        operation: "export/url",
+        input: "convert-doc",
+      },
+    },
+  });
+
+  const uploadTask = job.tasks.find((t) => t.name === "import-doc");
+  await cloudConvert.tasks.upload(uploadTask, docxBuffer, filename, docxBuffer.length);
+
+  job = await cloudConvert.jobs.wait(job.id);
+
+  if (job.status === "error") {
+    const failedTask = job.tasks.find((t) => t.status === "error");
+    throw new Error(
+      `CloudConvert conversion failed: ${failedTask?.message || "unknown error"}`
+    );
+  }
+
+  const exportUrls = cloudConvert.jobs.getExportUrls(job);
+  if (!exportUrls || exportUrls.length === 0) {
+    throw new Error("CloudConvert returned no output file");
+  }
+
+  const response = await fetch(exportUrls[0].url);
+  if (!response.ok) {
+    throw new Error(`Failed to download converted PDF (HTTP ${response.status})`);
+  }
+  const arrayBuffer = await response.arrayBuffer();
+  return Buffer.from(arrayBuffer);
 }
 
 module.exports = { convertDocxBufferToPdf };
