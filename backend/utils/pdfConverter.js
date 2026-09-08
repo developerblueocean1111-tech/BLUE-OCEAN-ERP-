@@ -11,9 +11,12 @@
 //   • Any other platform (Render's Linux servers) → CloudConvert.
 //     Word COM automation cannot run on Linux at all (it's a Windows-only
 //     technology), so production uses the cloud API instead. Requires
-//     CLOUDCONVERT_API_KEY to be set as an environment variable on Render
-//     (see the CloudConvert setup notes further down), and is subject to
-//     CloudConvert's usage limits/pricing on their end.
+//     CLOUDCONVERT_API_KEY to be set as an environment variable on Render,
+//     and is subject to CloudConvert's usage limits/pricing on their end —
+//     if you see "Payment Required" errors, that's your CloudConvert
+//     account needing a payment method added or hitting its usage limit;
+//     check https://cloudconvert.com/dashboard for the exact reason. This
+//     is an account/billing issue on CloudConvert's side, not a code bug.
 //
 // Both paths produce a PDF from the already-filled DOCX buffer that
 // generateDocumentBuffer() built — no template/content/formatting logic is
