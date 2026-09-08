@@ -15,6 +15,7 @@ const {
   listDocumentTypes,
   previewDocument,
   generateDocument,
+  generateAllDocumentsZip,
 } = require("../controllers/shipment.controller");
 const router = express.Router();
 
@@ -39,6 +40,7 @@ router.get("/", fetchAllShipments);
 router.get("/:id/document-types", listDocumentTypes);
 router.get("/:id/generate-document/:docType/preview", previewDocument);
 router.post("/:id/generate-document/:docType", generateDocument);
+router.post("/:id/generate-all-documents", generateAllDocumentsZip);
 
 // BUG FIX: GET /:id was imported but never registered.
 // Wizard.js calls GET /shipment/:id on edit to fetch the full document.
