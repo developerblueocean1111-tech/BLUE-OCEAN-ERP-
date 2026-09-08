@@ -1116,6 +1116,7 @@ exports.previewDocument = async (req, res) => {
 //   Fills the fixed template with shipment AUTO values + the user's edited
 //   values, and streams the resulting .docx back for download.
 const { convertDocxBufferToPdf } = require("../utils/pdfConverter");
+const AdmZip = require("adm-zip"); // ✅ NEW — for bundling all 5 PDFs into one ZIP
 
 // ✅ NEW — fixed PDF filenames as requested (no invoice-number suffix,
 // matching the exact names given in the spec).
@@ -1176,6 +1177,64 @@ exports.generateDocument = async (req, res) => {
       return res.status(422).json({ message: err.message, details: err.details });
     }
     console.error("generateDocument error:", err);
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────
+// ✅ NEW — POST /:id/generate-all-documents
+//   Generates all 5 documents as PDFs and bundles them into a single ZIP.
+//   Reuses the exact same generateDocumentBuffer + convertDocxBufferToPdf
+//   pipeline as the single-document endpoint above — no new document logic.
+//   A document that fails (e.g. missing Invoice Number/Date) is skipped
+//   rather than failing the whole ZIP; skipped ones are reported back via
+//   the X-Skipped-Documents response header so the frontend can warn the
+//   user, without blocking the documents that DID succeed.
+// ─────────────────────────────────────────────────────────────────────────
+exports.generateAllDocumentsZip = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid shipment ID" });
+    }
+    const doc = await shipment.findById(id).lean();
+    if (!doc) {
+      return res.status(404).json({ message: "Shipment not found" });
+    }
+
+    const zip = new AdmZip();
+    const skipped = [];
+
+    for (const [docType, meta] of Object.entries(DOCUMENT_TYPES)) {
+      try {
+        const docxBuffer = generateDocumentBuffer(docType, doc, {});
+        const pdfBuffer = await convertDocxBufferToPdf(docxBuffer, meta.file);
+        const pdfFilename = PDF_FILENAMES[docType] || `${docType}.pdf`;
+        zip.addFile(pdfFilename, pdfBuffer);
+      } catch (docErr) {
+        console.error(`generateAllDocumentsZip: skipping ${docType} —`, docErr.message);
+        skipped.push(`${meta.label}: ${docErr.message}`);
+      }
+    }
+
+    if (zip.getEntries().length === 0) {
+      return res.status(422).json({
+        message: "No documents could be generated for this shipment.",
+        details: skipped,
+      });
+    }
+
+    const safeQmr = (doc.enquiry_no || id).toString().replace(/[^a-zA-Z0-9_-]/g, "");
+    const zipFilename = `Documents_${safeQmr}.zip`;
+
+    if (skipped.length > 0) {
+      res.setHeader("X-Skipped-Documents", encodeURIComponent(skipped.join(" | ")));
+    }
+    res.setHeader("Content-Type", "application/zip");
+    res.setHeader("Content-Disposition", `attachment; filename="${zipFilename}"`);
+    res.send(zip.toBuffer());
+  } catch (err) {
+    console.error("generateAllDocumentsZip error:", err);
     res.status(500).json({ message: err.message });
   }
 };
