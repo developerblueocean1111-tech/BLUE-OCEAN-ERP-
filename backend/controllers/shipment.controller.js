@@ -1238,3 +1238,102 @@ exports.generateAllDocumentsZip = async (req, res) => {
     res.status(500).json({ message: err.message });
   }
 };
+
+// ─────────────────────────────────────────────────────────────────────────
+// ✅ NEW — Label Document (Shipment List → "Generate Document" → the 6th
+//   option, "Label Document"). Completely additive/isolated:
+//     • Existing 5 document types, their templates, and every function
+//       above this block are untouched.
+//     • No existing Shipment field, schema, route, or save logic is
+//       modified.
+//     • Reuses the exact same DOCX→PDF pipeline (convertDocxBufferToPdf)
+//       and the exact same "bundle into a ZIP" pattern already used by
+//       generateAllDocumentsZip above — no new conversion/bundling system.
+//
+//   DESIGN NOTE: PO Number is not stored anywhere connected to a Shipment
+//   in this app's data (confirmed against real data — no Enquiry/Shipment
+//   record ever has a PO Number a user's label PO will match). So this
+//   works exactly like the other 5 documents: the shipment is the one
+//   already open in the modal (:id, same as generateDocument above). The
+//   user-entered PO Number(s) are printed on the label as given — they are
+//   NOT used to look anything up. "Multiple PO Numbers" means the same
+//   shipment's data is printed once per PO Number entered (e.g. one
+//   shipment covering several purchase orders).
+//
+//   POST /shipment/:id/generate-label
+//   Body: { poNumbers: ["PS00001247", ...] }  — always an array; one PO
+//   Number is just an array of length 1.
+//
+//   Response:
+//     • Exactly one label file produced (one PO, one box) → a single PDF,
+//       same download pattern as the existing documents.
+//     • More than one file (multiple POs and/or a multi-box shipment) →
+//       a ZIP, same pattern as "Download All". Every filename is prefixed
+//       with its own PO Number so it's always clear which label is which.
+// ─────────────────────────────────────────────────────────────────────────
+const { generateLabelDocxBuffersForPo } = require("../utils/labelGenerator");
+
+exports.generateLabelDocument = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "Invalid shipment ID" });
+    }
+
+    const poNumbers = Array.isArray(req.body?.poNumbers)
+      ? req.body.poNumbers.map((p) => String(p || "").trim()).filter(Boolean)
+      : [];
+    if (poNumbers.length === 0) {
+      return res.status(400).json({ message: "At least one PO Number is required." });
+    }
+
+    const shipmentDoc = await shipment.findById(id).lean();
+    if (!shipmentDoc) {
+      return res.status(404).json({ message: "Shipment not found" });
+    }
+
+    const files = []; // { filename, pdfBuffer }
+    const skipped = []; // "<PO>: <reason>"
+
+    for (const po of poNumbers) {
+      try {
+        const docxFiles = generateLabelDocxBuffersForPo(shipmentDoc, po);
+        for (const { filename, buffer } of docxFiles) {
+          const pdfBuffer = await convertDocxBufferToPdf(buffer, filename);
+          files.push({ filename: filename.replace(/\.docx$/, ".pdf"), pdfBuffer });
+        }
+      } catch (genErr) {
+        skipped.push(`${po}: ${genErr.message}`);
+      }
+    }
+
+    if (files.length === 0) {
+      console.error("generateLabelDocument: no labels generated. Skipped:", skipped);
+      return res.status(422).json({
+        message: "No labels could be generated.",
+        details: skipped.length > 0 ? skipped : ["Unable to generate label."],
+      });
+    }
+
+    if (skipped.length > 0) {
+      res.setHeader("X-Skipped-POs", encodeURIComponent(skipped.join(" | ")));
+    }
+
+    if (files.length === 1) {
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Disposition", `attachment; filename="${files[0].filename}"`);
+      return res.send(files[0].pdfBuffer);
+    }
+
+    const zip = new AdmZip();
+    for (const f of files) {
+      zip.addFile(f.filename, f.pdfBuffer);
+    }
+    res.setHeader("Content-Type", "application/zip");
+    res.setHeader("Content-Disposition", `attachment; filename="Labels_${Date.now()}.zip"`);
+    res.send(zip.toBuffer());
+  } catch (err) {
+    console.error("generateLabelDocument error:", err);
+    res.status(500).json({ message: err.message });
+  }
+};
