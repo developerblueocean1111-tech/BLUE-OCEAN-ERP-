@@ -16,6 +16,7 @@ const {
   previewDocument,
   generateDocument,
   generateAllDocumentsZip,
+  generateLabelDocument,   // ✅ NEW — Label Document
 } = require("../controllers/shipment.controller");
 const router = express.Router();
 
@@ -41,6 +42,13 @@ router.get("/:id/document-types", listDocumentTypes);
 router.get("/:id/generate-document/:docType/preview", previewDocument);
 router.post("/:id/generate-document/:docType", generateDocument);
 router.post("/:id/generate-all-documents", generateAllDocumentsZip);
+
+// ── New: Label Document — Shipment List "Generate Document" → 6th option ──
+// Same shape as the 5 document routes above: shipment-id-scoped. The
+// user-entered PO Number(s) are printed on the label, not looked up
+// against any collection (see the big comment block on
+// generateLabelDocument in the controller for why).
+router.post("/:id/generate-label", generateLabelDocument);
 
 // BUG FIX: GET /:id was imported but never registered.
 // Wizard.js calls GET /shipment/:id on edit to fetch the full document.
