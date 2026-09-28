@@ -102,26 +102,68 @@ const DOCUMENT_TYPES = {
     label: "Export Value Declaration (EVD)",
     file: "EVD.docx",
     editableFields: [],
+    category: "consulting", // ✅ NEW
   },
   end_use_letter: {
     label: "End Use Letter",
     file: "EndUseLetter.docx",
     editableFields: ["part_desc", "end_user", "sector"],
+    category: "consulting", // ✅ NEW
   },
   scomet: {
     label: "SCOMET Declaration",
     file: "SCOMET.docx",
     editableFields: ["part_desc", "end_user"],
+    category: "consulting", // ✅ NEW
+  },
+  // ✅ NEW — Technologies. Same tokens as scomet (INVOICE_DAY/SUFFIX/MONTH/
+  // YEAR, INVOICE_NO, END_USER, PART_DESC) — reuses generateDocumentBuffer()
+  // unchanged, only templateFile differs.
+  tech_scomet: {
+    label: "SCOMET Declaration",
+    file: "TechnologySCOMET.docx",
+    editableFields: ["part_desc", "end_user"],
+    category: "technologies",
   },
   authority_letter: {
     label: "Authority Letter",
     file: "AuthorityLetter.docx",
     editableFields: [],
+    category: "consulting", // ✅ NEW
+  },
+  // ✅ NEW — Technologies. Same tokens as authority_letter (INVOICE_DAY/
+  // SUFFIX/MONTH_YEAR, FF). Template file supplied already tokenized —
+  // registered as-is, no template edits needed.
+  tech_authority_letter: {
+    label: "Authority Letter",
+    file: "TechnologyAuthorityLetter.docx",
+    editableFields: [],
+    category: "technologies",
   },
   cargo_security_declaration: {
     label: "Cargo Security Declaration",
     file: "CargoSecurityDeclaration.docx",
     editableFields: ["hawb", "mawb", "ff", "mode"],
+    category: "consulting", // ✅ NEW
+  },
+  // ✅ NEW — Technologies. Same tokens as cargo_security_declaration
+  // (INVOICE_DAY/SUFFIX/MONTH_YEAR, INVOICE_NO, HAWB, MAWB, MODE, FF).
+  // Template file supplied already tokenized — registered as-is.
+  tech_cargo_security_declaration: {
+    label: "Cargo Security Declaration",
+    file: "TechnologyCargoSecurityDeclaration.docx",
+    editableFields: ["hawb", "mawb", "ff", "mode"],
+    category: "technologies",
+  },
+  // ✅ NEW — Technologies. Same token set as end_use_letter (INVOICE_NO/
+  // DATE, PART_DESC, END_USER) so it reuses buildPlaceholderValues() and
+  // generateDocumentBuffer() completely unchanged — only the template file
+  // differs. Nothing about end_use_letter above was touched.
+  tech_end_use_letter: {
+    label: "End Use Letter",
+    file: "TechnologyEndUseLetter.docx",
+    editableFields: ["part_desc", "end_user", "sector"],
+    category: "technologies",
   },
 };
 
@@ -160,7 +202,7 @@ function buildPlaceholderValues(docType, shipmentDoc, editableOverrides = {}) {
     values.INVOICE_MONTH_YEAR = date.monthYear;
   }
 
-  if (docType === "cargo_security_declaration") {
+  if (docType === "cargo_security_declaration" || docType === "tech_cargo_security_declaration") {
     const mode = shipmentDoc.mode ? String(shipmentDoc.mode).trim() : "";
     // Template wording is "Sea shipment" / "Sea transportation"; substitute
     // the actual mode (Sea/Air/Road/Rail) — default to "Sea" wording only
@@ -188,7 +230,7 @@ function buildPlaceholderValues(docType, shipmentDoc, editableOverrides = {}) {
   // ✅ NEW — Authority Letter: FF (Freight Forwarder) replaces the previously
   // hard-coded "Expeditors International (India) Pvt Ltd" in the template.
   // Existing Invoice Number/Date fetching above is untouched.
-  if (docType === "authority_letter") {
+  if (docType === "authority_letter" || docType === "tech_authority_letter") {
     values.FF = escapeXmlText(shipmentDoc.ff || "");
   }
 
@@ -294,7 +336,7 @@ function previewDocumentFields(docType, shipmentDoc, editableOverrides = {}) {
     // types that use them; undefined (omitted) for the other 4 doc types.
     sb_no: docType === "evd" ? (shipmentDoc.sb_no || "") : undefined,
     sb_date: docType === "evd" ? (shipmentDoc.sb_date || "") : undefined,
-    ff: docType === "authority_letter" ? (shipmentDoc.ff || "") : undefined,
+    ff: (docType === "authority_letter" || docType === "tech_authority_letter") ? (shipmentDoc.ff || "") : undefined,
     editableFields: meta.editableFields,
     editable,
     missing,
