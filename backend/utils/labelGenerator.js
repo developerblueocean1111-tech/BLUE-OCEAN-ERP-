@@ -170,8 +170,11 @@ function buildLabelValues(shipmentDoc, poNumber, boxNumber, totalBoxes) {
   return { values, missing };
 }
 
-// Fill the Label.docx template for one box. Returns a docx Buffer.
-function generateLabelDocxBuffer(shipmentDoc, poNumber, boxNumber, totalBoxes) {
+// Fills a Label template (Label.docx by default) for one box. Returns a
+// docx Buffer. templateFile is optional — every existing call site keeps
+// using LABEL_TEMPLATE_FILE ("Label.docx") exactly as before; passing a
+// different filename (e.g. "TechnologyLabel.docx") is additive.
+function generateLabelDocxBuffer(shipmentDoc, poNumber, boxNumber, totalBoxes, templateFile = LABEL_TEMPLATE_FILE) {
   const { values, missing } = buildLabelValues(shipmentDoc, poNumber, boxNumber, totalBoxes);
   if (missing.length > 0) {
     const err = new Error(missing.join(" "));
@@ -180,9 +183,9 @@ function generateLabelDocxBuffer(shipmentDoc, poNumber, boxNumber, totalBoxes) {
     throw err;
   }
 
-  const templatePath = path.join(TEMPLATES_DIR, LABEL_TEMPLATE_FILE);
+  const templatePath = path.join(TEMPLATES_DIR, templateFile);
   if (!fs.existsSync(templatePath)) {
-    const err = new Error(`Label template file not found: ${LABEL_TEMPLATE_FILE}`);
+    const err = new Error(`Label template file not found: ${templateFile}`);
     err.code = "TEMPLATE_NOT_FOUND";
     throw err;
   }
@@ -210,12 +213,13 @@ function generateLabelDocxBuffer(shipmentDoc, poNumber, boxNumber, totalBoxes) {
 // ("1 OF 4", "2 OF 4", ...) with identical shipment data and only BOX_INFO
 // changing. Returns an array of { filename, buffer } — length 1 when the
 // shipment has a single box (or the field isn't set, defaults to 1).
-function generateLabelDocxBuffersForPo(shipmentDoc, poNumber) {
+// templateFile is optional, same default/behavior as above.
+function generateLabelDocxBuffersForPo(shipmentDoc, poNumber, templateFile = LABEL_TEMPLATE_FILE) {
   const totalBoxes = Math.max(1, Number(shipmentDoc.total_no_of_boxes) || 1);
   const safePo = String(poNumber).replace(/[^a-zA-Z0-9_-]/g, "");
   const results = [];
   for (let boxNumber = 1; boxNumber <= totalBoxes; boxNumber++) {
-    const buffer = generateLabelDocxBuffer(shipmentDoc, poNumber, boxNumber, totalBoxes);
+    const buffer = generateLabelDocxBuffer(shipmentDoc, poNumber, boxNumber, totalBoxes, templateFile);
     const filename = totalBoxes > 1
       ? `Label_${safePo}_Box${boxNumber}of${totalBoxes}.docx`
       : `Label_${safePo}.docx`;
