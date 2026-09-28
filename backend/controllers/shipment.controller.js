@@ -1083,6 +1083,7 @@ exports.listDocumentTypes = async (req, res) => {
   const list = Object.entries(DOCUMENT_TYPES).map(([docType, meta]) => ({
     docType,
     label: meta.label,
+    category: meta.category, // ✅ NEW
   }));
   res.json(list);
 };
@@ -1126,6 +1127,11 @@ const PDF_FILENAMES = {
   scomet: "SCOMET_Declaration.pdf",
   authority_letter: "Authority_Letter.pdf",
   cargo_security_declaration: "Cargo_Security_Declaration.pdf",
+  // ✅ NEW — Technologies
+  tech_end_use_letter: "End_Use_Letter.pdf",
+  tech_scomet: "SCOMET_Declaration.pdf",
+  tech_authority_letter: "Authority_Letter.pdf",
+  tech_cargo_security_declaration: "Cargo_Security_Declaration.pdf",
 };
 
 exports.generateDocument = async (req, res) => {
@@ -1205,7 +1211,12 @@ exports.generateAllDocumentsZip = async (req, res) => {
     const zip = new AdmZip();
     const skipped = [];
 
+    // ✅ NEW — defaults to "consulting" (existing behavior, unchanged) when
+    // no category is passed; only Technologies callers need to pass it.
+    const category = req.query.category === "technologies" ? "technologies" : "consulting";
+
     for (const [docType, meta] of Object.entries(DOCUMENT_TYPES)) {
+      if (meta.category !== category) continue; // ✅ NEW
       try {
         const docxBuffer = generateDocumentBuffer(docType, doc, {});
         const pdfBuffer = await convertDocxBufferToPdf(docxBuffer, meta.file);
@@ -1287,6 +1298,10 @@ exports.generateLabelDocument = async (req, res) => {
       return res.status(400).json({ message: "At least one PO Number is required." });
     }
 
+    // ✅ NEW — defaults to Consulting's Label.docx (existing behavior,
+    // unchanged) when no category is passed.
+    const labelTemplateFile = req.body?.category === "technologies" ? "TechnologyLabel.docx" : undefined;
+
     const shipmentDoc = await shipment.findById(id).lean();
     if (!shipmentDoc) {
       return res.status(404).json({ message: "Shipment not found" });
@@ -1297,7 +1312,7 @@ exports.generateLabelDocument = async (req, res) => {
 
     for (const po of poNumbers) {
       try {
-        const docxFiles = generateLabelDocxBuffersForPo(shipmentDoc, po);
+        const docxFiles = generateLabelDocxBuffersForPo(shipmentDoc, po, labelTemplateFile); // ✅ CHANGED — 3rd arg added
         for (const { filename, buffer } of docxFiles) {
           const pdfBuffer = await convertDocxBufferToPdf(buffer, filename);
           files.push({ filename: filename.replace(/\.docx$/, ".pdf"), pdfBuffer });
