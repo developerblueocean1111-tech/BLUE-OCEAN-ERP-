@@ -250,6 +250,7 @@ function buildPlaceholderValues(docType, shipmentDoc, editableOverrides = {}) {
     const fallback = shipmentDoc.customer || "";
     const val = editableOverrides.end_user !== undefined ? editableOverrides.end_user : fallback;
     values.END_USER = escapeXmlText(val);
+  }
 
   // ✅ NEW — Sector (End Use Letter only). Shipment-derived default,
   // overridable by the user, blank when neither source has a value —
