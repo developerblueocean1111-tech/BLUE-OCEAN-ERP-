@@ -245,10 +245,11 @@ function buildPlaceholderValues(docType, shipmentDoc, editableOverrides = {}) {
     values.PART_DESC = escapeXmlText(val);
   }
 
-  if (meta.editableFields.includes("end_user")) {
-    const val = editableOverrides.end_user !== undefined ? editableOverrides.end_user : "";
+    if (meta.editableFields.includes("end_user")) {
+    // ✅ NEW — fetch Customer Name as the End User value
+    const fallback = shipmentDoc.customer || "";
+    const val = editableOverrides.end_user !== undefined ? editableOverrides.end_user : fallback;
     values.END_USER = escapeXmlText(val);
-  }
 
   // ✅ NEW — Sector (End Use Letter only). Shipment-derived default,
   // overridable by the user, blank when neither source has a value —
