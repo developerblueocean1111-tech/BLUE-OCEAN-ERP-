@@ -58,6 +58,12 @@ function normalizePartSuppliers(list) {
   }));
 }
 
+// Escape user text for safe use inside a RegExp (used for the case-insensitive
+// duplicate check when an existing enquiry's number is edited).
+function escapeRegex(str) {
+  return String(str).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 // POST /api/v1/enquiry/create
 exports.createEnquiry = async (req, res) => {
   try {
@@ -163,6 +169,8 @@ exports.getAllEnquiries = async (req, res) => {
         { customerName: searchRegex },
         { enquiryNumber: searchRegex },
         { itemDescription: searchRegex },
+        { "parts.itemDescription": searchRegex },
+        { "parts.children.itemDescription": searchRegex },
         { "poDetails.supplierName": searchRegex },
         { "poDetails.poNumber": searchRegex },
         { "poDetailsList.supplierName": searchRegex },
@@ -297,6 +305,49 @@ exports.updateEnquiry = async (req, res) => {
 
     // Helper: normalize a value to a comparable string
     const norm = (v) => (v == null ? "" : String(v).trim());
+
+    // ── Enquiry Number edit (after save) ──────────────────────────────
+    // Auto-generation on create is untouched. Here an already-saved enquiry may
+    // have its number changed. Only acts when a *different* number is sent, so a
+    // record's own current number is never treated as a duplicate of itself and
+    // every existing client that re-sends the unchanged number behaves as before.
+    let newEnquiryNumber = null;
+    if (typeof data.enquiryNumber === "string") {
+      const requested = data.enquiryNumber.trim();
+      const currentNumber = norm(current.enquiryNumber);
+      if (requested !== currentNumber && requested !== "auto") {
+        if (!requested) {
+          return res.status(400).json({ message: "Enquiry number cannot be empty." });
+        }
+        // The auto-generator derives the next sequence from numbers shaped like
+        // ENQ-YY-<digits>; keep anything in that family numeric so a manual edit
+        // can never poison the next auto-generated number.
+        if (/^ENQ-\d{2}-/i.test(requested) && !/^ENQ-\d{2}-\d+$/i.test(requested)) {
+          return res.status(400).json({
+            message: "Enquiry numbers starting with ENQ-YY- must end in digits only (e.g. ENQ-26-015).",
+          });
+        }
+        const clash = await Enquiry.findOne({
+          _id: { $ne: current._id }, // the record being edited is never a duplicate of itself
+          enquiryNumber: { $regex: `^${escapeRegex(requested)}$`, $options: "i" },
+        })
+          .select("_id")
+          .lean();
+        if (clash) {
+          return res.status(409).json({
+            message: `Enquiry number "${requested}" is already used by another enquiry.`,
+          });
+        }
+        newEnquiryNumber = requested;
+        newEntries.push({
+          section: "BO / Enquiry Details",
+          sectionColor: "bo",
+          description: `Enquiry number changed from ${currentNumber || "(none)"} to ${requested}`,
+          user,
+          timestamp: now,
+        });
+      }
+    }
     const normDate = (v) => {
       if (!v) return "";
       const d = new Date(v);
@@ -335,11 +386,15 @@ exports.updateEnquiry = async (req, res) => {
             customerPartName: norm(p.customerPartName),
             modifiedBOPartNo: norm(p.modifiedBOPartNo),
             boPartName: norm(p.boPartName),
+            itemDescription: norm(p.itemDescription),
+            boNumberMode: norm(p.boNumberMode) || "auto",
             children: (p.children || []).map((c) => ({
               customerPartNo: norm(c.customerPartNo),
               customerPartName: norm(c.customerPartName),
               modifiedBOPartNo: norm(c.modifiedBOPartNo),
               boPartName: norm(c.boPartName),
+              itemDescription: norm(c.itemDescription),
+              boNumberMode: norm(c.boNumberMode) || "auto",
             })),
           }))
         );
@@ -387,7 +442,8 @@ exports.updateEnquiry = async (req, res) => {
       newEntries.push({ section: "General", sectionColor: "bo", description: "Enquiry record saved (no field changes detected)", user, timestamp: now });
     }
 
-    const { enquiryNumber, ...setData } = data; // never overwrite enquiryNumber via $set
+    // enquiryNumber is applied separately (validated above), never via the bulk assign.
+    const { enquiryNumber, ...setData } = data;
 
     // Explicitly normalize PO Details / per-part suppliers before saving —
     // guarantees these are always written even if a field came through
@@ -401,13 +457,14 @@ exports.updateEnquiry = async (req, res) => {
 
     console.log("[updateEnquiry] Incoming partSuppliers:", JSON.stringify(req.body.partSuppliers));
     console.log("[updateEnquiry] Normalized partSuppliers to save:", JSON.stringify(setData.partSuppliers));
-
+//explicity the comment in the comment content has been the context into the system 
     // Load as a live document (not .lean()) so we can use markModified —
     // this removes any possibility of a nested-object $set being skipped.
     const doc = await Enquiry.findById(req.params.id);
     if (!doc) return res.status(404).json({ message: "Enquiry not found" });
 
     Object.assign(doc, setData);
+    if (newEnquiryNumber) doc.enquiryNumber = newEnquiryNumber;
     doc.markModified("poDetails");
     doc.markModified("partSuppliers");
     doc.editHistory.push(...newEntries);
