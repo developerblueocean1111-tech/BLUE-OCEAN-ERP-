@@ -19,6 +19,11 @@ const EnquirySchema = new mongoose.Schema(
         modifiedBOPartNo: { type: String, default: "" },
         boPartName: { type: String, default: "" },
         isChildPart: { type: Boolean, default: false },
+        // Optional Item Description. Empty => the enquiry-level
+        // (common) itemDescription applies. Older records simply lack this.
+        itemDescription: { type: String, default: "" },
+        // "auto" (existing  BO Part No builder) | "customerPartNumber" (BO No mirrors Customer Part No)
+        boNumberMode: { type: String, default: "auto" },
         children: [
           {
             _id: false,
@@ -27,6 +32,8 @@ const EnquirySchema = new mongoose.Schema(
             modifiedBOPartNo: { type: String, default: "" },
             boPartName: { type: String, default: "" },
             isChildPart: { type: Boolean, default: true },
+            itemDescription: { type: String, default: "" },
+            boNumberMode: { type: String, default: "auto" },
           },
         ],
       },
