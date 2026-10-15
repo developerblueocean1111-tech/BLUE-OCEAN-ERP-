@@ -17,6 +17,8 @@ const {
   generateDocument,
   generateAllDocumentsZip,
   generateLabelDocument,   // ✅ NEW — Label Document
+  packingListLookup,       // ✅ NEW — Packing List
+  generatePackingList,     // ✅ NEW — Packing List
 } = require("../controllers/shipment.controller");
 const router = express.Router();
 
@@ -49,6 +51,15 @@ router.post("/:id/generate-all-documents", generateAllDocumentsZip);
 // against any collection (see the big comment block on
 // generateLabelDocument in the controller for why).
 router.post("/:id/generate-label", generateLabelDocument);
+
+// ── New: Packing List — Shipment List "Generate Document" → 7th option ──
+// Not shipment-id-scoped (a Packing List can span multiple POs/shipments
+// in one document) — PO Number(s) are the lookup key instead, resolved
+// via the existing utils/poLookup.js (same resolver Label Document uses).
+// Static paths, so route order relative to "/:id" below doesn't matter,
+// but kept here with the other document-generation routes for clarity.
+router.post("/packing-list/lookup", packingListLookup);
+router.post("/packing-list/generate", generatePackingList);
 
 // BUG FIX: GET /:id was imported but never registered.
 // Wizard.js calls GET /shipment/:id on edit to fetch the full document.
