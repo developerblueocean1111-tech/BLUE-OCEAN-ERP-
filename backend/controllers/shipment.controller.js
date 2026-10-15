@@ -1352,3 +1352,171 @@ exports.generateLabelDocument = async (req, res) => {
     res.status(500).json({ message: err.message });
   }
 };
+
+// ─────────────────────────────────────────────────────────────────────────
+// ✅ NEW — Packing List — Shipment List "Generate Document" → 7th option.
+//   Fully isolated from the 5-document + Label flows above: its own
+//   generator (utils/packingListGenerator.js), its own two routes, nothing
+//   about the existing document types/templates/APIs is touched.
+//
+//   Two-step flow, mirroring the frontend's "lookup → edit pallets → PDF"
+//   wizard:
+//     1) POST /shipment/packing-list/lookup   { poNumbers: [...] }
+//        Resolves PO Number(s) → shipment/part/invoice data, one entry per
+//        (PO, part) pair (never merged — spec §6), each pre-seeded with a
+//        default pallet breakdown so the UI has something to render before
+//        the user touches the "Number of Pallets" dropdown.
+//     2) POST /shipment/packing-list/generate  { ...header fields, items }
+//        Takes the user's final (possibly hand-edited) item/pallet
+//        breakdown, validates every item's pallet quantities sum to that
+//        item's quantity (spec §4), then builds and returns the PDF.
+//   Not shipment-id-scoped like the other routes — a Packing List can span
+//   multiple POs/shipments in one document, so there is no single ":id" to
+//   hang it off of; PO Number(s) are the lookup key instead (same idea as
+//   Label Document's PO-driven lookup).
+// ─────────────────────────────────────────────────────────────────────────
+const {
+  lookupPackingListItems,
+  buildDefaultPallets,
+  generatePackingListBuffer,
+} = require("../utils/packingListGenerator");
+
+exports.packingListLookup = async (req, res) => {
+  try {
+    const poNumbers = Array.isArray(req.body?.poNumbers)
+      ? req.body.poNumbers.map((p) => String(p || "").trim()).filter(Boolean)
+      : [];
+    if (poNumbers.length === 0) {
+      return res.status(400).json({ message: "At least one PO Number is required." });
+    }
+
+    const { items, skipped } = await lookupPackingListItems(poNumbers);
+
+    if (items.length === 0) {
+      return res.status(422).json({
+        message: "No item details could be found for the given PO Number(s).",
+        details: skipped.length > 0 ? skipped.map((s) => `${s.poNumber}: ${s.reason}`) : undefined,
+      });
+    }
+
+    // Pre-seed a default pallet breakdown (1 pallet = the whole line) so the
+    // frontend has something to show before the user picks "Number of
+    // Pallets"; purely a UI convenience, the user can change the count and
+    // every value before generating.
+    const itemsWithDefaultPallets = items.map((item) => ({
+      ...item,
+      palletCount: item.suggestedPalletCount || 1,
+      pallets: buildDefaultPallets(
+        item.qty,
+        item.grossWt,
+        item.dimensions,
+        item.suggestedPalletCount || 1
+      ),
+    }));
+
+    if (skipped.length > 0) {
+      res.setHeader(
+        "X-Skipped-POs",
+        encodeURIComponent(skipped.map((s) => `${s.poNumber}: ${s.reason}`).join(" | "))
+      );
+    }
+
+    res.json({ items: itemsWithDefaultPallets, skipped });
+  } catch (err) {
+    console.error("packingListLookup error:", err);
+    res.status(500).json({ message: err.message });
+  }
+};
+
+exports.generatePackingList = async (req, res) => {
+  try {
+    const body = req.body || {};
+    const items = Array.isArray(body.items) ? body.items : [];
+    if (items.length === 0) {
+      return res.status(400).json({ message: "At least one item line is required." });
+    }
+
+    // ✅ Validate — every item's pallet quantities must sum to that item's
+    // own quantity (spec §4: "validate that total pallet quantity matches
+    // shipment quantity"). Checked per item line, not globally, consistent
+    // with pallets being scoped per (PO, part) rather than pooled across a
+    // multi-PO/multi-part selection.
+    const validationErrors = [];
+    items.forEach((item, idx) => {
+      const pallets = Array.isArray(item.pallets) ? item.pallets : [];
+      if (pallets.length === 0) {
+        validationErrors.push(`Line ${idx + 1} (${item.description || "item"}): at least one pallet is required.`);
+        return;
+      }
+      const palletQtySum = pallets.reduce((sum, p) => sum + (Number(p.qty) || 0), 0);
+      const itemQty = Number(item.qty) || 0;
+      if (palletQtySum !== itemQty) {
+        validationErrors.push(
+          `Line ${idx + 1} (${item.description || "item"}): pallet quantities total ${palletQtySum}, but the item quantity is ${itemQty}.`
+        );
+      }
+    });
+
+    if (validationErrors.length > 0) {
+      return res.status(422).json({
+        message: "Pallet quantities do not match item quantities.",
+        details: validationErrors,
+      });
+    }
+
+    let buffer;
+    try {
+      buffer = generatePackingListBuffer({
+        category: body.category,
+        packingListNo: body.packingListNo,
+        packingListDate: body.packingListDate,
+        customerPoNumber: body.customerPoNumber,
+        customerPoDate: body.customerPoDate,
+        pol: body.pol,
+        portOfDischarge: body.portOfDischarge,
+        finalDestination: body.finalDestination,
+        carrierBy: body.carrierBy,
+        containerNo: body.containerNo,
+        invoiceNo: body.invoiceNo,
+        invoiceDate: body.invoiceDate,
+        consignee: body.consignee,
+        buyer: body.buyer,
+        exporter: body.exporter,
+        items,
+      });
+    } catch (genErr) {
+      if (genErr.code === "TEMPLATE_NOT_FOUND" || genErr.code === "TEMPLATE_CORRUPT") {
+        console.error("generatePackingList template error:", genErr);
+        return res.status(500).json({ message: genErr.message });
+      }
+      throw genErr;
+    }
+
+    if (req.query.format === "docx") {
+      res.setHeader(
+        "Content-Type",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      );
+      res.setHeader("Content-Disposition", `attachment; filename="PackingList_${body.packingListNo || Date.now()}.docx"`);
+      return res.send(buffer);
+    }
+
+    let pdfBuffer;
+    try {
+      pdfBuffer = await convertDocxBufferToPdf(buffer, "PackingList.docx");
+    } catch (convErr) {
+      console.error("PDF conversion error:", convErr);
+      return res.status(500).json({ message: "PDF conversion failed. Please try again." });
+    }
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="PackingList_${body.packingListNo || Date.now()}.pdf"`
+    );
+    res.send(pdfBuffer);
+  } catch (err) {
+    console.error("generatePackingList error:", err);
+    res.status(500).json({ message: err.message });
+  }
+};
