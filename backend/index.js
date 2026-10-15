@@ -10,6 +10,9 @@ const notificationRoutes = require("./routes/notification.route");
 const enquiryRoutes = require("./routes/enquiry.route");
 const authRoutes = require("./routes/auth.route");
 const adminRoutes = require("./routes/admin.route");
+// ✅ NEW — Customer Address Book (Packing List feature). Fully isolated
+// route file; nothing above this line is touched.
+const customerAddressBookRoutes = require("./routes/customerAddressBook.route");
 // const cookieParser = require("cookie-parser");
 const fileUpload = require("express-fileupload");
 const cors = require("cors");
@@ -33,9 +36,9 @@ app.use(
 );
 app.use(
     fileUpload({
-		useTempFiles: true,
-		tempFileDir: "/tmp",
-	})
+    useTempFiles: true,
+    tempFileDir: "/tmp",
+  })
 );
 
 app.use("/api/v1/shipment", shipmentRoutes);
@@ -50,13 +53,16 @@ app.use("/api/v1/notification", notificationRoutes);
 app.use("/api/v1/enquiry", enquiryRoutes);
   app.use("/api/v1/auth", authRoutes);
 app.use("/api/v1/admin", adminRoutes);
+// ✅ NEW — Customer Address Book (Packing List feature)
+app.use("/api/v1/customer-address-book", customerAddressBookRoutes);
+app.use("/api/customer-address-book", customerAddressBookRoutes);
 
 // Testing the server
 app.get("/", (req, res) => {
-	return res.json({
-		success: true,
-		message: "Your server is up and running ...",
-	});
+  return res.json({
+    success: true,
+    message: "Your server is up and running ...",
+  });
 });
 
 // Keep-alive / uptime monitor target
@@ -86,6 +92,6 @@ app.get("/api/v1/test", (_, res) => {
 
 // Listening to the server
 app.listen(PORT, () => {
-	console.log(`App is listening at ${PORT}`);
-	keepAlive();
+  console.log(`App is listening at ${PORT}`);
+  keepAlive();
 });
