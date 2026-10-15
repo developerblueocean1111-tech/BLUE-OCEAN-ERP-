@@ -15,8 +15,11 @@ const PartItemSchema = new mongoose.Schema({
   net_wt_per_unit: { type: Number, default: 0 }, // Net Wt / Unit (Kg)
   packing_wt: { type: Number, default: 0 },     // Packing Wt (Kg)
   gross_wt: { type: Number, default: 0 } ,
-  no_of_boxes: { type: Number, default: 0 }, 
-         
+  no_of_boxes: { type: Number, default: 0 },
+
+  // ✅ NEW — Packing List generation (customs HSN classification code).
+  // Additive only: optional, defaults to "", no existing field/logic touched.
+  hsn_code: { type: String, default: "" },
 });
 
 /**
@@ -78,6 +81,15 @@ total_no_of_boxes: { type: Number },
     bl_no: { type: String },
     container_no: { type: String },
     pol: { type: String }, // Port of Loading
+
+    // ✅ NEW — Packing List generation. Additive only, optional, default "".
+    // Reused on every Packing List generated for this shipment once set,
+    // same persistence pattern as `pol` above. "Place of Final Delivery"
+    // on the Packing List mirrors final_destination by default (the
+    // reference sample shows identical values for both), so this single
+    // field covers both without requiring two near-duplicate inputs.
+    port_of_discharge: { type: String, default: "" },
+    final_destination: { type: String, default: "" },
 
     // ✅ NEW — Cargo Security Declaration editable fields (Document Generation
     // feature). Additive only: no existing field touched. Still editable
