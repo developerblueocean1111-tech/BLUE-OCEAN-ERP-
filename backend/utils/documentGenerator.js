@@ -261,6 +261,15 @@ function buildPlaceholderValues(docType, shipmentDoc, editableOverrides = {}) {
     values.SECTOR = escapeXmlText(val);
   }
 
+  // ✅ NEW — POL (Port of Loading), End Use Letter only. Auto-fetched from
+  // the shipment record (shipment.pol — same field already used elsewhere
+  // in the app, e.g. the Shipment List POL column), for the template's
+  // {{POL}} token. Not user-editable; blank (not invented) when the
+  // shipment has no POL set. Additive only — nothing else here is touched.
+  if (docType === "end_use_letter") {
+    values.POL = escapeXmlText(shipmentDoc.pol || "");
+  }
+
   if (meta.editableFields.includes("hawb")) {
     const fallback = shipmentDoc.hawb || "";
     const val = editableOverrides.hawb !== undefined ? editableOverrides.hawb : fallback;
