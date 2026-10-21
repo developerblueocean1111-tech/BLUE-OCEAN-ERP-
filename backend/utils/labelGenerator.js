@@ -3,7 +3,7 @@ const path = require("path");
 const AdmZip = require("adm-zip");
 
 // ─────────────────────────────────────────────────────────────────────────
-// ✅ NEW — Label Document generation (Shipment List → "Generate Document" →
+// ✅ NEW — Label Document Generation (Shipment List → "Generate Document" →
 //   "Label Document"). Additive-only, isolated from documentGenerator.js —
 //   the existing 5 documents and their template/logic are not touched.
 //
@@ -67,7 +67,7 @@ function healSplitPlaceholderRuns(xml) {
     const rPr = rPrMatch ? rPrMatch[1] : "";
     const rest = rPrMatch ? inner.slice(rPrMatch[0].length) : inner;
     const tMatch = rest.match(T_RE);
-    // "Simple" = nothing but rPr + one <w:t> — only these are safe to
+    // "Simple" = but rPr + one <w:t> — only these are safe to
     // delete and fold into a preceding run.
     const isSimple = !!tMatch && rest.trim() === tMatch[0].trim();
     return { rPr, hasT: !!tMatch, isSimple, text: tMatch ? tMatch[1] : null };
@@ -111,11 +111,11 @@ function healSplitPlaceholderRuns(xml) {
   return result;
 }
 
-// Builds the {{TOKEN}}: value map for ONE box of ONE shipment/PO.
+// Builds the content for the {{TOKEN}}: value map for ONE box of ONE shipment/PO.
 // Returns { values, missing }. `missing` lists required fields that are
 // absent on the shipment so the caller can refuse to generate a label with
 // blank/invented data (per spec §17) instead of silently continuing.
-function buildLabelValues(shipmentDoc, poNumber, boxNumber, totalBoxes) {
+function buildLabelValues(shipmentDoc, poNumber, boxNumber, totalBoxes, qtyOverride) { // ✅ CHANGED — qtyOverride added
   const missing = [];
   const values = {};
 
@@ -147,7 +147,10 @@ function buildLabelValues(shipmentDoc, poNumber, boxNumber, totalBoxes) {
   // parts[].quantity into total_parts_count), same source of truth the
   // Shipment List itself displays — not recalculated here.
   const qty = shipmentDoc.total_parts_count ?? shipmentDoc.total_qty ?? null;
-  if (qty === null || qty === undefined || qty === "") {
+  if (qtyOverride !== undefined && qtyOverride !== null && String(qtyOverride).trim() !== "") {
+    // ✅ NEW — user-entered quantity for this PO wins over the shipment total
+    values.QTY = escapeXmlText(String(qtyOverride).trim());
+  } else if (qty === null || qty === undefined || qty === "") {
     missing.push("Quantity is not available for this shipment.");
     values.QTY = "";
   } else {
@@ -174,8 +177,8 @@ function buildLabelValues(shipmentDoc, poNumber, boxNumber, totalBoxes) {
 // docx Buffer. templateFile is optional — every existing call site keeps
 // using LABEL_TEMPLATE_FILE ("Label.docx") exactly as before; passing a
 // different filename (e.g. "TechnologyLabel.docx") is additive.
-function generateLabelDocxBuffer(shipmentDoc, poNumber, boxNumber, totalBoxes, templateFile = LABEL_TEMPLATE_FILE) {
-  const { values, missing } = buildLabelValues(shipmentDoc, poNumber, boxNumber, totalBoxes);
+function generateLabelDocxBuffer(shipmentDoc, poNumber, boxNumber, totalBoxes, templateFile = LABEL_TEMPLATE_FILE, qtyOverride) { // ✅ CHANGED — qtyOverride added
+  const { values, missing } = buildLabelValues(shipmentDoc, poNumber, boxNumber, totalBoxes, qtyOverride); // ✅ CHANGED
   if (missing.length > 0) {
     const err = new Error(missing.join(" "));
     err.code = "MISSING_REQUIRED_FIELDS";
@@ -208,18 +211,18 @@ function generateLabelDocxBuffer(shipmentDoc, poNumber, boxNumber, totalBoxes, t
   return zip.toBuffer();
 }
 
-// One shipment can span multiple boxes (total_no_of_boxes). Per the
-// reference label samples provided, each physical box gets its own label
+// One shipment can span multiple boxes (total_number_of_boxes). Per the
+//reference label  samples provided, each physical box gets its own label
 // ("1 OF 4", "2 OF 4", ...) with identical shipment data and only BOX_INFO
 // changing. Returns an array of { filename, buffer } — length 1 when the
 // shipment has a single box (or the field isn't set, defaults to 1).
-// templateFile is optional, same default/behavior as above.
-function generateLabelDocxBuffersForPo(shipmentDoc, poNumber, templateFile = LABEL_TEMPLATE_FILE) {
+// templateFile is optional, same default/behaviour as above 
+function generateLabelDocxBuffersForPo(shipmentDoc, poNumber, templateFile = LABEL_TEMPLATE_FILE, qtyOverride) { // ✅ CHANGED — qtyOverride added
   const totalBoxes = Math.max(1, Number(shipmentDoc.total_no_of_boxes) || 1);
   const safePo = String(poNumber).replace(/[^a-zA-Z0-9_-]/g, "");
   const results = [];
   for (let boxNumber = 1; boxNumber <= totalBoxes; boxNumber++) {
-    const buffer = generateLabelDocxBuffer(shipmentDoc, poNumber, boxNumber, totalBoxes, templateFile);
+    const buffer = generateLabelDocxBuffer(shipmentDoc, poNumber, boxNumber, totalBoxes, templateFile, qtyOverride); // ✅ CHANGED
     const filename = totalBoxes > 1
       ? `Label_${safePo}_Box${boxNumber}of${totalBoxes}.docx`
       : `Label_${safePo}.docx`;
