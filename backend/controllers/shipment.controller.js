@@ -1298,6 +1298,11 @@ exports.generateLabelDocument = async (req, res) => {
       return res.status(400).json({ message: "At least one PO Number is required." });
     }
 
+    // ✅ NEW — quantities typed in the modal, index-aligned with poNumbers
+    const poQuantities = Array.isArray(req.body?.poQuantities)
+      ? req.body.poQuantities.map((q) => String(q ?? "").trim())
+      : [];
+
     // ✅ NEW — defaults to Consulting's Label.docx (existing behavior,
     // unchanged) when no category is passed.
     const labelTemplateFile = req.body?.category === "technologies" ? "TechnologyLabel.docx" : undefined;
@@ -1310,9 +1315,9 @@ exports.generateLabelDocument = async (req, res) => {
     const files = []; // { filename, pdfBuffer }
     const skipped = []; // "<PO>: <reason>"
 
-    for (const po of poNumbers) {
+    for (const [poIdx, po] of poNumbers.entries()) { // ✅ CHANGED — index added
       try {
-        const docxFiles = generateLabelDocxBuffersForPo(shipmentDoc, po, labelTemplateFile); // ✅ CHANGED — 3rd arg added
+        const docxFiles = generateLabelDocxBuffersForPo(shipmentDoc, po, labelTemplateFile, poQuantities[poIdx]); // ✅ CHANGED — 4th arg added
         for (const { filename, buffer } of docxFiles) {
           const pdfBuffer = await convertDocxBufferToPdf(buffer, filename);
           files.push({ filename: filename.replace(/\.docx$/, ".pdf"), pdfBuffer });
