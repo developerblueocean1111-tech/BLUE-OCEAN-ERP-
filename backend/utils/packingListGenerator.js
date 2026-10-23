@@ -310,6 +310,29 @@ function generatePackingListBuffer({
   exporter, // optional { name, lines: [...] } — overrides the fixed block when sent
   items,
 }) {
+  // Lines that split ONE item across several PO entries (same `splitGroup`,
+  // already validated by the controller) are printed as that item ONCE:
+  // one item row with its total qty / net / gross weight, and its boxes
+  // from all the split lines numbered continuously (1/2, 2/2). Items
+  // without a splitGroup are passed through exactly as before.
+  {
+    const merged = [];
+    const byGroup = new Map();
+    for (const it of items) {
+      if (!it.splitGroup) {
+        merged.push(it);
+      } else if (byGroup.has(it.splitGroup)) {
+        const target = byGroup.get(it.splitGroup);
+        target.pallets = target.pallets.concat(it.pallets || []);
+      } else {
+        const copy = { ...it, pallets: [...(it.pallets || [])] };
+        byGroup.set(it.splitGroup, copy);
+        merged.push(copy);
+      }
+    }
+    items = merged;
+  }
+
   const templateFile = TEMPLATE_FILES[category] || TEMPLATE_FILES.consulting;
   const baseExporter = EXPORTER_BLOCKS[category] || EXPORTER_BLOCKS.consulting;
   const exporterBlock =
