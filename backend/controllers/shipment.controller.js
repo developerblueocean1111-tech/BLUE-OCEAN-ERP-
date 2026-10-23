@@ -1436,28 +1436,93 @@ exports.packingListLookup = async (req, res) => {
 exports.generatePackingList = async (req, res) => {
   try {
     const body = req.body || {};
-    const items = Array.isArray(body.items) ? body.items : [];
+    let items = Array.isArray(body.items) ? body.items : [];
     if (items.length === 0) {
       return res.status(400).json({ message: "At least one item line is required." });
     }
 
-    // ✅ Validate — every item's pallet quantities must sum to that item's
-    // own quantity (spec §4: "validate that total pallet quantity matches
-    // shipment quantity"). Checked per item line, not globally, consistent
-    // with pallets being scoped per (PO, part) rather than pooled across a
-    // multi-PO/multi-part selection.
+    // Safety net for requests that arrive WITHOUT a `splitGroup` (e.g. a
+    // cached/older frontend): several lines for the SAME item (same
+    // description, HSN, unit and total qty) whose boxes don't each add up
+    // to that qty on their own are a split of one item, so they are
+    // tagged as one group. Lines that already add up on their own stay
+    // independent, and different items are never grouped.
+    {
+      const sumOf = (it) =>
+        (Array.isArray(it.pallets) ? it.pallets : []).reduce((a, p) => a + (Number(p.qty) || 0), 0);
+      const identity = (it) =>
+        [it.description, it.hsnCode, it.unit, Number(it.qty) || 0]
+          .map((v) => String(v ?? "").trim().toLowerCase())
+          .join("|");
+      const buckets = new Map();
+      items.forEach((it, idx) => {
+        if (it.splitGroup) return;
+        const k = identity(it);
+        if (!buckets.has(k)) buckets.set(k, []);
+        buckets.get(k).push(idx);
+      });
+      const tagged = items.map((it) => it);
+      buckets.forEach((idxs, k) => {
+        if (idxs.length < 2) return;
+        const allSelfConsistent = idxs.every((i) => sumOf(items[i]) === (Number(items[i].qty) || 0));
+        if (allSelfConsistent) return;
+        idxs.forEach((i) => { tagged[i] = { ...items[i], splitGroup: `auto:${k}` }; });
+      });
+      items = tagged;
+    }
+
+    // ✅ Validate pallet/box quantities.
+    //   • A line on its own: its pallets must sum to that line's quantity
+    //     (unchanged original rule).
+    //   • Lines that split ONE item across several PO entries / lines
+    //     (they share a `splitGroup` id, set by the Packing List screen):
+    //     the pallets of ALL lines in the group are summed and compared
+    //     with the item's total quantity — an individual line is never
+    //     compared against the full quantity. Groups never mix: different
+    //     items / unrelated POs have different (or no) splitGroup, so
+    //     their quantities are never pooled.
+    // Keep in sync with plValidationErrors in GenerateDocumentModal.js.
     const validationErrors = [];
+    const sumPallets = (item) =>
+      (Array.isArray(item.pallets) ? item.pallets : []).reduce(
+        (sum, p) => sum + (Number(p.qty) || 0),
+        0
+      );
+    const lineLabel = (item, idx) =>
+      `Line ${idx + 1} (${item.description || "item"}${item.poNumber ? `, PO ${item.poNumber}` : ""})`;
+
+    const groups = new Map(); // groupKey -> [{ item, idx }]
     items.forEach((item, idx) => {
-      const pallets = Array.isArray(item.pallets) ? item.pallets : [];
-      if (pallets.length === 0) {
-        validationErrors.push(`Line ${idx + 1} (${item.description || "item"}): at least one pallet is required.`);
+      const key = item.splitGroup ? `group:${item.splitGroup}` : `line:${idx}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push({ item, idx });
+    });
+
+    groups.forEach((members) => {
+      const noPallets = members.filter(
+        ({ item }) => !(Array.isArray(item.pallets) && item.pallets.length > 0)
+      );
+      if (noPallets.length > 0) {
+        noPallets.forEach(({ item, idx }) =>
+          validationErrors.push(`${lineLabel(item, idx)}: at least one pallet is required.`)
+        );
         return;
       }
-      const palletQtySum = pallets.reduce((sum, p) => sum + (Number(p.qty) || 0), 0);
-      const itemQty = Number(item.qty) || 0;
-      if (palletQtySum !== itemQty) {
+      const expectedQty = Number(members[0].item.qty) || 0;
+      if (members.length > 1 && members.some(({ item }) => (Number(item.qty) || 0) !== expectedQty)) {
         validationErrors.push(
-          `Line ${idx + 1} (${item.description || "item"}): pallet quantities total ${palletQtySum}, but the item quantity is ${itemQty}.`
+          `${members[0].item.description || "item"}: split lines must all carry the same total item quantity.`
+        );
+        return;
+      }
+      const actualQty = members.reduce((sum, { item }) => sum + sumPallets(item), 0);
+      if (actualQty !== expectedQty) {
+        const label =
+          members.length > 1
+            ? `${members[0].item.description || "item"} (combined across ${members.length} lines)`
+            : lineLabel(members[0].item, members[0].idx);
+        validationErrors.push(
+          `${label}: combined pallet quantities total ${actualQty}, but the expected item quantity is ${expectedQty}.`
         );
       }
     });
