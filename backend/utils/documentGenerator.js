@@ -233,7 +233,11 @@ function buildPlaceholderValues(docType, shipmentDoc, editableOverrides = {}) {
   if (docType === "authority_letter" || docType === "tech_authority_letter") {
     values.FF = escapeXmlText(shipmentDoc.ff || "");
   }
-
+  // ✅ NEW — SCOMET: Port of Loading (shipment.pol) replaces the hard-coded
+  // "Nhava Shewa" — template token is {{POL}}. Blank when pol isn't set.
+  if (docType === "scomet") {
+    values.POL = escapeXmlText(shipmentDoc.pol || "");
+  }
   // Editable fields: shipment-derived default, overridable by the user.
   // Never invented — blank when neither source has a value.
   if (meta.editableFields.includes("part_desc")) {
