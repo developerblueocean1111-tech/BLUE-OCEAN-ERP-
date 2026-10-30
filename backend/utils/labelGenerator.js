@@ -67,7 +67,7 @@ function healSplitPlaceholderRuns(xml) {
     const rPr = rPrMatch ? rPrMatch[1] : "";
     const rest = rPrMatch ? inner.slice(rPrMatch[0].length) : inner;
     const tMatch = rest.match(T_RE);
-    // "Simple" = but rPr + one <w:t> — only these are safe to
+    // "Simple" = nothing but rPr + one <w:t> — only these are safe to
     // delete and fold into a preceding run.
     const isSimple = !!tMatch && rest.trim() === tMatch[0].trim();
     return { rPr, hasT: !!tMatch, isSimple, text: tMatch ? tMatch[1] : null };
@@ -211,17 +211,85 @@ function generateLabelDocxBuffer(shipmentDoc, poNumber, boxNumber, totalBoxes, t
   return zip.toBuffer();
 }
 
+// ✅ NEW — when several PO Numbers are labelled together, the shipment's
+// physical boxes (1..total) are shared out between them: each PO gets one
+// consecutive block of boxes, block sizes differ by at most 1 (extras go to
+// the earliest POs), and every box belongs to exactly one PO. Returns the
+// first/last box number (and size) for PO #index. (Used only when the
+// Packing List's own box counts per PO were not supplied.)
+function boxRangeForPo(totalBoxes, index, count) {
+  const base = Math.floor(totalBoxes / count);
+  const extra = totalBoxes % count;
+  const size = base + (index < extra ? 1 : 0);
+  const first = index * base + Math.min(index, extra) + 1;
+  return { first, last: first + size - 1, size };
+}
+
 // One shipment can span multiple boxes (total_number_of_boxes). Per the
 //reference label  samples provided, each physical box gets its own label
 // ("1 OF 4", "2 OF 4", ...) with identical shipment data and only BOX_INFO
 // changing. Returns an array of { filename, buffer } — length 1 when the
 // shipment has a single box (or the field isn't set, defaults to 1).
-// templateFile is optional, same default/behaviour as above 
-function generateLabelDocxBuffersForPo(shipmentDoc, poNumber, templateFile = LABEL_TEMPLATE_FILE, qtyOverride) { // ✅ CHANGED — qtyOverride added
-  const totalBoxes = Math.max(1, Number(shipmentDoc.total_no_of_boxes) || 1);
+// templateFile is optional, same default/behaviour as above.
+//
+// ✅ NEW — poSlot is optional: { index, count, boxCounts }.
+//   • index / count  = this PO's position among the PO Numbers being labelled.
+//   • boxCounts      = boxes per PO exactly as entered in the Packing List
+//                      (one number per PO, same order). When given, the
+//                      labels use the Packing List's box numbering: PO 1 gets
+//                      boxes 1..n1, PO 2 the next n2, … and the "OF" total is
+//                      the Packing List's total number of boxes.
+//   • without boxCounts and count > 1 → the shipment's boxes are shared out
+//     evenly between the POs (boxRangeForPo above).
+//   • omitted, or count <= 1 without boxCounts → every box, exactly as before.
+function generateLabelDocxBuffersForPo(shipmentDoc, poNumber, templateFile = LABEL_TEMPLATE_FILE, qtyOverride, poSlot) { // ✅ CHANGED — qtyOverride, poSlot added
+  let totalBoxes = Math.max(1, Number(shipmentDoc.total_no_of_boxes) || 1);
   const safePo = String(poNumber).replace(/[^a-zA-Z0-9_-]/g, "");
+
+  let firstBox = 1;
+  let lastBox = totalBoxes;
+
+  const index = poSlot ? Number(poSlot.index) || 0 : 0;
+  const count = poSlot ? Number(poSlot.count) || 0 : 0;
+  const counts = poSlot && Array.isArray(poSlot.boxCounts) ? poSlot.boxCounts.map(Number) : null;
+  const countsUsable =
+    !!counts &&
+    counts.length === count &&
+    index >= 0 && index < counts.length &&
+    counts.every((n) => Number.isInteger(n) && n >= 0) &&
+    counts.reduce((s, n) => s + n, 0) >= 1;
+
+  if (countsUsable) {
+    // Packing List's own box numbers for this PO.
+    totalBoxes = counts.reduce((s, n) => s + n, 0);
+    const mine = counts[index];
+    if (mine < 1) {
+      const err = new Error(`PO ${poNumber} has no boxes in the Packing List.`);
+      err.code = "MISSING_REQUIRED_FIELDS";
+      err.details = [err.message];
+      throw err;
+    }
+    firstBox = 1 + counts.slice(0, index).reduce((s, n) => s + n, 0);
+    lastBox = firstBox + mine - 1;
+  } else if (poSlot && count > 1) {
+    const range = boxRangeForPo(totalBoxes, index, count);
+    if (range.size < 1) {
+      // More PO Numbers than boxes: this PO has no physical box of its own.
+      // Reported through the same error shape as other missing-data cases so
+      // the existing "PO Numbers were skipped" handling shows the reason.
+      const err = new Error(
+        `Only ${totalBoxes} box${totalBoxes === 1 ? "" : "es"} for ${count} PO Numbers — PO ${poNumber} has no box of its own.`
+      );
+      err.code = "MISSING_REQUIRED_FIELDS";
+      err.details = [err.message];
+      throw err;
+    }
+    firstBox = range.first;
+    lastBox = range.last;
+  }
+
   const results = [];
-  for (let boxNumber = 1; boxNumber <= totalBoxes; boxNumber++) {
+  for (let boxNumber = firstBox; boxNumber <= lastBox; boxNumber++) {
     const buffer = generateLabelDocxBuffer(shipmentDoc, poNumber, boxNumber, totalBoxes, templateFile, qtyOverride); // ✅ CHANGED
     const filename = totalBoxes > 1
       ? `Label_${safePo}_Box${boxNumber}of${totalBoxes}.docx`
