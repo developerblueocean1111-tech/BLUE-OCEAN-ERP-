@@ -68,6 +68,121 @@ function round2(n) {
   return Math.round((Number(n) + Number.EPSILON) * 100) / 100;
 }
 
+// ── ✅ NEW — Display formatting for the two Packing List dates ───────────
+// Display only: the stored/typed values are never modified. Accepts the
+// formats the screen can produce or a user can type — 2026-10-12, 12/10/2026,
+// 12-10-2026, 12.10.26, 12-Oct-26, 12 October 2026, 30th Apr 26 — and, when a
+// value can't be read as a date, leaves it exactly as it was.
+const PL_MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+function parsePlDateParts(raw) {
+  if (raw === null || raw === undefined) return null;
+  if (raw instanceof Date) {
+    return isNaN(raw.getTime()) ? null : { d: raw.getDate(), m: raw.getMonth() + 1, y: raw.getFullYear() };
+  }
+  const s = String(raw).trim();
+  if (!s) return null;
+  const year4 = (v) => (v.length === 2 ? 2000 + Number(v) : Number(v));
+  let d, m, y, mt;
+  if ((mt = s.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:[T\s].*)?$/))) {
+    // 2026-10-12 (also 2026-10-12T00:00:00.000Z — the date part is used as-is)
+    y = Number(mt[1]); m = Number(mt[2]); d = Number(mt[3]);
+  } else if ((mt = s.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4}|\d{2})$/))) {
+    // 12/10/2026 → day first (12 Oct). Only if the second number can't be a
+    // month (e.g. 04/30/2026) is it read month-first.
+    const a = Number(mt[1]); const b = Number(mt[2]);
+    if (b > 12 && a <= 12) { d = b; m = a; } else { d = a; m = b; }
+    y = year4(mt[3]);
+  } else if ((mt = s.match(/^(\d{1,2})(?:st|nd|rd|th)?[\s.-]*([A-Za-z]{3,9})\.?[\s,.-]*(\d{4}|\d{2})$/))) {
+    // 12-Oct-26, 12 October 2026, 30th Apr 26
+    const idx = PL_MONTH_ABBR.findIndex((a) => a.toLowerCase() === mt[2].slice(0, 3).toLowerCase());
+    if (idx < 0) return null;
+    d = Number(mt[1]); m = idx + 1; y = year4(mt[3]);
+  } else {
+    return null;
+  }
+  if (!(m >= 1 && m <= 12) || !(d >= 1) || d > new Date(y, m, 0).getDate()) return null;
+  return { d, m, y };
+}
+
+function plOrdinalSuffix(day) {
+  const d = Number(day);
+  if (d % 100 >= 11 && d % 100 <= 13) return "th"; // 11th, 12th, 13th
+  if (d % 10 === 1) return "st";
+  if (d % 10 === 2) return "nd";
+  if (d % 10 === 3) return "rd";
+  return "th";
+}
+
+// Packing List Date → DD-MMM-YY   (12-Oct-26, 05-Jan-26)
+function formatPackingListDate(raw) {
+  const p = parsePlDateParts(raw);
+  if (!p) return raw === null || raw === undefined ? "" : String(raw);
+  return `${String(p.d).padStart(2, "0")}-${PL_MONTH_ABBR[p.m - 1]}-${String(p.y % 100).padStart(2, "0")}`;
+}
+
+// Customer PO Date → Dth/Dst/Dnd/Drd MMM YY   (30th Apr 26, 1st Jan 26)
+// The allocation screen can send several PO dates joined by ", " — each one
+// is formatted and the list is kept.
+function formatCustomerPoDate(raw) {
+  const one = (v) => {
+    const p = parsePlDateParts(v);
+    return p ? `${p.d}${plOrdinalSuffix(p.d)} ${PL_MONTH_ABBR[p.m - 1]} ${String(p.y % 100).padStart(2, "0")}` : null;
+  };
+  if (raw === null || raw === undefined) return "";
+  const s = String(raw);
+  const whole = one(s);
+  if (whole !== null) return whole;
+  if (!/[,;]/.test(s)) return s;
+  const pieces = s.split(/\s*[,;]\s*/).filter((x) => x !== "");
+  const formatted = pieces.map((x) => one(x));
+  return formatted.some((f) => f !== null) ? pieces.map((x, i) => formatted[i] ?? x).join(", ") : s;
+}
+
+// ── ✅ NEW — Description cell: part description, then its Part Number ────
+//   Holder 9"
+//   (501-10-004)
+// The Part Number is the part_no of the same shipment part record the
+// description comes from (sent with each item as `partNo`; items that carry
+// several parts send `partLines`). Printed exactly as stored.
+function itemDescriptionLines(item) {
+  const lines = [];
+  const pairs = Array.isArray(item.partLines)
+    ? item.partLines.filter((p) => p && (String(p.description ?? "").trim() || String(p.partNo ?? "").trim()))
+    : [];
+  const pushPair = (description, partNo) => {
+    const desc = String(description ?? "");
+    const no = String(partNo ?? "");
+    lines.push(desc);
+    // no repeat when the description is itself the part number
+    if (no.trim() && no !== desc) lines.push(`(${no})`);
+  };
+  if (pairs.length > 0) {
+    pairs.forEach((p) => pushPair(p.description, p.partNo));
+  } else {
+    pushPair(item.description, item.partNo);
+  }
+  return lines;
+}
+
+// Puts the description lines in the item row's {{ITEM_DESC}} cell, every line
+// in a run that copies the formatting of the template's own run (same font /
+// size), so the Part Number line looks exactly like the description line.
+// If the token isn't in a plain run it is left for the normal substitution.
+function fillItemDescription(rowXml, lines) {
+  // (the rPr part may not run past its own </w:rPr>, so the match can never reach into a neighbouring run/cell)
+  const re = /<w:r(?:\s[^>]*)?>(<w:rPr>(?:(?!<\/w:rPr>)[\s\S])*<\/w:rPr>)?(<w:t(?:\s[^>]*)?>)\{\{ITEM_DESC\}\}<\/w:t><\/w:r>/;
+  if (!re.test(rowXml)) return rowXml;
+  return rowXml.replace(re, (_m, rPr, tOpen) =>
+    lines
+      .map((ln, i) =>
+        // first line keeps the template's own <w:t> tag; later lines start with a line break
+        `<w:r>${rPr || ""}${i > 0 ? '<w:br/><w:t xml:space="preserve">' : tOpen}${escapeXmlText(ln)}</w:t></w:r>`
+      )
+      .join("")
+  );
+}
+
 // Same technique as labelGenerator.js's healSplitPlaceholderRuns — Word/
 // LibreOffice can silently split one {{TOKEN}} across multiple <w:t> runs
 // with identical formatting. This merges adjacent "simple" runs (nothing
@@ -367,9 +482,9 @@ function generatePackingListBuffer({
     extractTemplateRow(xml, "{{ITEM_DESC}}", "item");
   const itemRowsXml = items
     .map((item, idx) =>
-      substituteRow(itemRowTemplate, {
+      substituteRow(fillItemDescription(itemRowTemplate, itemDescriptionLines(item)), {
         ITEM_SR_NO: String(idx + 1),
-        ITEM_DESC: item.description,
+        ITEM_DESC: itemDescriptionLines(item).join("\n"), // only used if the cell isn't a plain run (see fillItemDescription)
         ITEM_HSN: item.hsnCode || "",
         ITEM_QTY: String(item.qty),
         ITEM_UNIT: item.unit || "pcs",
@@ -432,10 +547,10 @@ function generatePackingListBuffer({
     BUYER_LINE5: buyerLines[4] || "",
     BUYER_LINE6: buyerLines[5] || "",
     PACKING_LIST_NO: packingListNo || "",
-    PACKING_LIST_DATE: packingListDate || "",
+    PACKING_LIST_DATE: formatPackingListDate(packingListDate), // ✅ CHANGED — DD-MMM-YY
     COUNTRY_OF_ORIGIN: COUNTRY_OF_ORIGIN,
     CUSTOMER_PO_NO: customerPoNumber || "",
-    CUSTOMER_PO_DATE: customerPoDate || "",
+    CUSTOMER_PO_DATE: formatCustomerPoDate(customerPoDate), // ✅ CHANGED — Dth MMM YY
     POL: pol || "",
     PORT_OF_DISCHARGE: portOfDischarge || "",
     FINAL_DELIVERY_PLACE: finalDestination || "",
@@ -477,6 +592,9 @@ function buildCustomerLines(block) {
 }
 
 module.exports = {
+  formatPackingListDate,
+  formatCustomerPoDate,
+  itemDescriptionLines,
   lookupPackingListItems,
   lookupCustomerAddress,
   distributeQuantity,
