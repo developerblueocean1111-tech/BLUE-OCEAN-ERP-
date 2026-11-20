@@ -561,7 +561,7 @@ function generatePackingListBuffer({
     TOTAL_NET_WEIGHT: totalNetWt.toFixed(3),
     TOTAL_GROSS_WEIGHT: totalGrossWt.toFixed(3),
     INVOICE_NO: invoiceNo || "",
-    INVOICE_DATE: invoiceDate || "",
+    INVOICE_DATE: formatPackingListDate(invoiceDate), // ✅ CHANGED — DD-MMM-YY (display only)
     SIGNATORY_COMPANY_NAME: exporterBlock.signatoryName,
   };
 
