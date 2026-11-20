@@ -1282,7 +1282,7 @@ exports.generateAllDocumentsZip = async (req, res) => {
 //       a ZIP, same pattern as "Download All". Every filename is prefixed
 //       with its own PO Number so it's always clear which label is which.
 // ─────────────────────────────────────────────────────────────────────────
-const { generateLabelDocxBuffersForPo } = require("../utils/labelGenerator");
+const { generateLabelDocxBuffersForPo, generateBoxLabelsDocxBuffer } = require("../utils/labelGenerator"); // ✅ CHANGED — combined (one page per PO) generator added
 
 exports.generateLabelDocument = async (req, res) => {
   try {
@@ -1310,6 +1310,46 @@ exports.generateLabelDocument = async (req, res) => {
     const shipmentDoc = await shipment.findById(id).lean();
     if (!shipmentDoc) {
       return res.status(404).json({ message: "Shipment not found" });
+    }
+
+    // ✅ NEW — ONE LABEL PER BOX. The shipment's total quantity and gross
+    // weight are divided across its total boxes; the user only says how many
+    // boxes belong to each PO (poBoxes). One PDF, one page per box, in PO
+    // order. Without poBoxes the original behaviour below is unchanged.
+    if (Array.isArray(req.body?.poBoxes)) {
+      const errors = [];
+      const boxCounts = req.body.poBoxes.map((b) => Number(b));
+      if (boxCounts.length !== poNumbers.length) errors.push("No. of Boxes must be given for every PO Number.");
+      const seen = new Set();
+      poNumbers.forEach((po, i) => {
+        if (seen.has(po.toLowerCase())) errors.push(`Duplicate PO Number: ${po}.`);
+        seen.add(po.toLowerCase());
+        if (!Number.isInteger(boxCounts[i]) || boxCounts[i] <= 0) errors.push(`${po}: No. of Boxes must be a positive whole number.`);
+      });
+      if (errors.length > 0) return res.status(400).json({ message: "Invalid label request.", details: errors });
+      try {
+        // ✅ CHANGED — one separate PDF per box ("Label 1 of 4.pdf" …) bundled in a
+        // ZIP that is named after the shipment's invoice number.
+        const boxDocs = generateBoxLabelsDocxBuffer(
+          shipmentDoc,
+          poNumbers.map((po, i) => ({ poNumber: po, boxes: boxCounts[i] })),
+          labelTemplateFile,
+          true
+        );
+        const labelZip = new AdmZip();
+        for (const { boxNo, totalBoxes, buffer } of boxDocs) {
+          const pdfName = `Label ${boxNo} of ${totalBoxes}.pdf`;
+          const pdfBuffer = await convertDocxBufferToPdf(buffer, pdfName);
+          labelZip.addFile(pdfName, pdfBuffer);
+        }
+        const zipBase = String(shipmentDoc.invoice_no || poNumbers[0]).replace(/[^a-zA-Z0-9_.-]/g, "") || `Labels_${Date.now()}`;
+        res.setHeader("Content-Type", "application/zip");
+        res.setHeader("Content-Disposition", `attachment; filename="${zipBase}.zip"`);
+        return res.send(labelZip.toBuffer());
+      } catch (genErr) {
+        console.error("generateLabelDocument (per-box labels) error:", genErr);
+        return res.status(422).json({ message: "No labels could be generated.", details: genErr.details || [genErr.message] });
+      }
     }
 
     const files = []; // { filename, pdfBuffer }
@@ -1587,6 +1627,105 @@ exports.generatePackingList = async (req, res) => {
     res.send(pdfBuffer);
   } catch (err) {
     console.error("generatePackingList error:", err);
+    res.status(500).json({ message: err.message });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────────────
+// ✅ NEW — PO-wise Part & Quantity Allocation → one Packing List per PO.
+//   POST /shipment/packing-list/generate-allocated
+//   Additive: the existing /packing-list/generate flow, its validation and
+//   its output are untouched. This endpoint re-reads the shipment's parts
+//   from the database (authoritative quantities / unit weights / boxes),
+//   validates the user's PO allocation with the same computeAllocation()
+//   the allocation screen uses, then builds each PO's Packing List with
+//   the existing generatePackingListBuffer + convertDocxBufferToPdf and
+//   returns ONE combined Packing List covering every PO.
+// ─────────────────────────────────────────────────────────────────────────
+const { computeAllocation, mapShipmentParts } = require("../utils/Packinglistallocation");
+
+exports.generateAllocatedPackingLists = async (req, res) => {
+  try {
+    const body = req.body || {};
+    if (!mongoose.Types.ObjectId.isValid(body.shipmentId)) {
+      return res.status(400).json({ message: "Invalid shipment ID" });
+    }
+    const shipmentDoc = await shipment.findById(body.shipmentId).lean();
+    if (!shipmentDoc) {
+      return res.status(404).json({ message: "Shipment not found" });
+    }
+
+    const parts = mapShipmentParts(shipmentDoc.parts, shipmentDoc);
+    if (parts.length === 0) {
+      return res.status(422).json({ message: "This shipment has no parts recorded." });
+    }
+
+    const result = computeAllocation({
+      parts,
+      pos: Array.isArray(body.pos) ? body.pos : [],
+      confirmations: body.confirmations || {},
+      requirePoDetails: true,
+    });
+    if (!result.ok) {
+      return res.status(422).json({
+        message: "PO allocation is not valid.",
+        details: result.errors,
+      });
+    }
+
+    // ONE Packing List for the whole shipment: every PO's allocation merged
+    // (each part once, boxes numbered continuously), with all PO Numbers /
+    // dates listed in the Customer PO fields.
+    const poNumbers = result.perPo.map((po) => po.poNumber);
+    const poDates = [...new Set(result.perPo.map((po) => String(po.poDate || "").trim()).filter(Boolean))];
+
+    let buffer;
+    try {
+      buffer = generatePackingListBuffer({
+        category: body.category,
+        packingListNo: body.packingListNo,
+        packingListDate: body.packingListDate,
+        customerPoNumber: poNumbers.join(", "),
+        customerPoDate: poDates.join(", "),
+        pol: body.pol,
+        portOfDischarge: body.portOfDischarge,
+        finalDestination: body.finalDestination,
+        carrierBy: body.carrierBy,
+        containerNo: body.containerNo,
+        invoiceNo: body.invoiceNo,
+        invoiceDate: body.invoiceDate,
+        consignee: body.consignee,
+        buyer: body.buyer,
+        exporter: body.exporter,
+        items: result.combinedItems,
+      });
+    } catch (genErr) {
+      if (genErr.code === "TEMPLATE_NOT_FOUND" || genErr.code === "TEMPLATE_CORRUPT") {
+        console.error("generateAllocatedPackingLists template error:", genErr);
+        return res.status(500).json({ message: genErr.message });
+      }
+      throw genErr;
+    }
+
+    const safeNo = String(body.packingListNo || Date.now()).replace(/[^a-zA-Z0-9_-]/g, "");
+    if (req.query.format === "docx") {
+      res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+      res.setHeader("Content-Disposition", `attachment; filename="PackingList_${safeNo}.docx"`);
+      return res.send(buffer);
+    }
+
+    let pdfBuffer;
+    try {
+      pdfBuffer = await convertDocxBufferToPdf(buffer, "PackingList.docx");
+    } catch (convErr) {
+      console.error("PDF conversion error:", convErr);
+      return res.status(500).json({ message: "PDF conversion failed. Please try again." });
+    }
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="PackingList_${safeNo}.pdf"`);
+    res.send(pdfBuffer);
+  } catch (err) {
+    console.error("generateAllocatedPackingLists error:", err);
     res.status(500).json({ message: err.message });
   }
 };
