@@ -81,22 +81,37 @@ async function convertViaCloudConvert(docxBuffer, filename) {
 
   const cloudConvert = new CloudConvert(apiKey);
 
+  // CHANGED (1/2): always upload under a .docx name, whatever the caller passes.
+  // Previously a ".pdf" name from the label code made CloudConvert treat the
+  // DOCX as a PDF ("unable to find trailer dictionary").
+  const baseName = String(filename || "document")
+    .replace(/\.(pdf|docx)$/i, "")
+    .replace(/[^a-zA-Z0-9_-]/g, "_");
+  const uploadName = `${baseName}.docx`;
+
   let job = await cloudConvert.jobs.create({
     tasks: {
       "import-doc": { operation: "import/upload" },
-      "convert-doc": { operation: "convert", input: "import-doc", input_format: "docx", output_format: "pdf" },
+      "convert-doc": { operation: "convert", input: "import-doc",  input_format: "docx",output_format: "pdf" },
       "export-doc": { operation: "export/url", input: "convert-doc" },
     },
   });
 
   const uploadTask = job.tasks.find((t) => t.name === "import-doc");
-  await cloudConvert.tasks.upload(uploadTask, docxBuffer, filename, docxBuffer.length);
+  await cloudConvert.tasks.upload(uploadTask, docxBuffer, uploadName, docxBuffer.length); // CHANGED: uses uploadName
 
   job = await cloudConvert.jobs.wait(job.id);
 
   if (job.status === "error") {
-    const failedTask = job.tasks.find((t) => t.status === "error");
-    throw new Error(`CloudConvert conversion failed: ${failedTask?.message || "unknown error"}`);
+    // CHANGED (2/2): report the real failed task, not the downstream
+    // "Input task has failed" export task.
+    const failedTask =
+      job.tasks.find((t) => t.status === "error" && t.code !== "INPUT_TASK_FAILED") ||
+      job.tasks.find((t) => t.status === "error");
+    console.error("CloudConvert failed task:", JSON.stringify(failedTask, null, 2));
+    throw new Error(
+      `CloudConvert conversion failed: ${failedTask?.code || ""} ${failedTask?.message || "unknown error"}`.trim()
+    );
   }
 
   const exportUrls = cloudConvert.jobs.getExportUrls(job);
