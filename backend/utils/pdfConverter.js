@@ -84,7 +84,7 @@ async function convertViaCloudConvert(docxBuffer, filename) {
   let job = await cloudConvert.jobs.create({
     tasks: {
       "import-doc": { operation: "import/upload" },
-      "convert-doc": { operation: "convert", input: "import-doc", output_format: "pdf" },
+      "convert-doc": { operation: "convert", input: "import-doc", input_format: "docx", output_format: "pdf" },
       "export-doc": { operation: "export/url", input: "convert-doc" },
     },
   });
