@@ -1337,11 +1337,11 @@ exports.generateLabelDocument = async (req, res) => {
           true
         );
         const labelZip = new AdmZip();
-        for (const { boxNo, totalBoxes, buffer } of boxDocs) {
-          const pdfName = `Label ${boxNo} of ${totalBoxes}.pdf`;
-          const pdfBuffer = await convertDocxBufferToPdf(buffer, pdfName);
-          labelZip.addFile(pdfName, pdfBuffer);
-        }
+       for (const { boxNo, totalBoxes, buffer } of boxDocs) {
+  const pdfName = `Label ${boxNo} of ${totalBoxes}.pdf`;                       // name inside the ZIP
+  const pdfBuffer = await convertDocxBufferToPdf(buffer, `Label_${boxNo}_of_${totalBoxes}.docx`); // name for conversion
+  labelZip.addFile(pdfName, pdfBuffer);
+}
         const zipBase = String(shipmentDoc.invoice_no || poNumbers[0]).replace(/[^a-zA-Z0-9_.-]/g, "") || `Labels_${Date.now()}`;
         res.setHeader("Content-Type", "application/zip");
         res.setHeader("Content-Disposition", `attachment; filename="${zipBase}.zip"`);
