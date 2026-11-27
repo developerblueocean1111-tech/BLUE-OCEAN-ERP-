@@ -119,6 +119,12 @@ const DOCUMENT_TYPES = {
   // ✅ NEW — Technologies. Same tokens as scomet (INVOICE_DAY/SUFFIX/MONTH/
   // YEAR, INVOICE_NO, END_USER, PART_DESC) — reuses generateDocumentBuffer()
   // unchanged, only templateFile differs.
+   tech_evd: {
+    label: "Export Value Declaration (EVD)",
+    file: "TechnologyEVD.docx",
+    editableFields: [],
+    category: "technologies",
+  },
   tech_scomet: {
     label: "SCOMET Declaration",
     file: "TechnologySCOMET.docx",
@@ -219,7 +225,7 @@ function buildPlaceholderValues(docType, shipmentDoc, editableOverrides = {}) {
   // Invoice Number/Date fetching above is untouched. Blank (not
   // "undefined"/"null") when the shipment doesn't have these values yet —
   // never blocks generation the way missing Invoice No./Date does.
-  if (docType === "evd") {
+  if (docType === "evd" || docType === "tech_evd") {
     values.SB_NO = escapeXmlText(shipmentDoc.sb_no || "");
     const sbDate = parseGenericDate(shipmentDoc.sb_date);
     values.SB_DAY = sbDate ? sbDate.day : "";
@@ -349,8 +355,8 @@ function previewDocumentFields(docType, shipmentDoc, editableOverrides = {}) {
     mode: shipmentDoc.mode || "",
     // ✅ NEW — additive display-only fields, only populated for the doc
     // types that use them; undefined (omitted) for the other 4 doc types.
-    sb_no: docType === "evd" ? (shipmentDoc.sb_no || "") : undefined,
-    sb_date: docType === "evd" ? (shipmentDoc.sb_date || "") : undefined,
+    sb_no: (docType === "evd"|| docType === "tech_evd") ? (shipmentDoc.sb_no || "") : undefined,
+   sb_date: (docType === "evd" || docType === "tech_evd") ? (shipmentDoc.sb_date || "") : undefined,
     ff: (docType === "authority_letter" || docType === "tech_authority_letter") ? (shipmentDoc.ff || "") : undefined,
     editableFields: meta.editableFields,
     editable,
