@@ -1132,6 +1132,7 @@ const PDF_FILENAMES = {
   tech_scomet: "SCOMET_Declaration.pdf",
   tech_authority_letter: "Authority_Letter.pdf",
   tech_cargo_security_declaration: "Cargo_Security_Declaration.pdf",
+    tech_evd: "EVD.pdf",
 };
 
 exports.generateDocument = async (req, res) => {
